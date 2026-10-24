@@ -1,0 +1,18 @@
+type = "read"
+summary = "Read text or codes: OCR, 1D barcode, QR, DataMatrix, DPM."
+default_method = "rule"
+
+[fields.code_type]
+required = true
+description = "OCR / Code128 / QR / DataMatrix / ..."
+example = "OCR, dot-matrix printing"
+
+[fields.format]
+required = false
+description = "Regular expression the correct string must match."
+example = "LOT-\\d{6}"
+
+[fields.column]
+required = true
+description = "Result column name; expected.csv holds the exact string."
+example = "lot"

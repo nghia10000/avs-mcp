@@ -1,0 +1,5 @@
+<AuroraVisionProject Name="HoleDistance" Version="5.6.6" Revision="79833" Product="Professional" StartUpProgramName="Main">
+  <Files>
+    <Program Path="Program.avcode" />
+  </Files>
+</AuroraVisionProject>

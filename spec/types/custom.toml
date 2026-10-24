@@ -1,0 +1,13 @@
+type = "custom"
+summary = "Anything that fits no other type. Describe it freely; add annotated images."
+default_method = "rule"
+
+[fields.description]
+required = true
+description = "What has to be done, in your own words."
+example = "track the glue bead and report gaps longer than 3 mm"
+
+[fields.column]
+required = false
+description = "Result column name, if any."
+example = "gap_count"

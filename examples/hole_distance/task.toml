@@ -1,0 +1,45 @@
+# Example task: distance between the two holes of a backlit plate.
+
+[task]
+name = "Hole distance"
+images = "images/"
+notes = "Backlit black plate with two round holes and a small notch on the top edge."
+
+[conditions]
+position = "plate shifts about ±30 px between shots"
+rotation = "none (< 1 deg)"
+lighting = "backlight, stable"
+variants = "one variant"
+
+[calibration]
+# Not calibrated yet: results stay in pixels.
+# mm_per_px = 0.05
+
+[output]
+results_csv = "results.csv"
+key = "image"
+destination = "CSV"
+on_missing = "error"
+
+[expected]
+# Reference values from an independent Python sub-pixel measurement (not a caliper);
+# replace with real measurements when available.
+file = "expected.csv"
+
+[[features]]
+id = "hole"
+looks_like = "round, bright inside the dark plate, about 38 px diameter"
+count = 2
+confused_with = "the half-round notch on the top edge (it touches the outside, so it is not a hole)"
+
+[[steps]]
+id = "hole_distance"
+type = "measure"
+method = "rule"
+from = "center of the left hole"
+to = "center of the right hole"
+direction = "straight line between the centers"
+column = "distance_px"
+unit = "px"
+nominal = 319.9
+tolerance = 0.5

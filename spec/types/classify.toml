@@ -1,0 +1,23 @@
+type = "classify"
+summary = "Assign each image / object to one class (product variant, orientation, sorting)."
+default_method = "deep"
+
+[fields.classes]
+required = true
+description = "Class names; expected.csv uses these names."
+example = ["type_A", "type_B", "upside_down"]
+
+[fields.how_to_tell]
+required = true
+description = "Visual difference between classes, in words."
+example = "type_B has a notch on the left edge"
+
+[fields.unknown_class]
+required = false
+description = "What to output for something that matches no class."
+example = "UNKNOWN"
+
+[fields.column]
+required = true
+description = "Result column name."
+example = "class"

@@ -1,0 +1,28 @@
+type = "locate"
+summary = "Find position / orientation of a part or feature (alignment, pick point, coordinate system)."
+default_method = "rule"
+
+[fields.target]
+required = true
+description = "What to find and what point/axis defines its pose."
+example = "plate outline; origin = center of left hole, X axis towards right hole"
+
+[fields.reference_image]
+required = false
+description = "Image (in images/) that shows the target clearly; annotate it with a rect in annotations.json."
+example = "back_paralell_1000.png"
+
+[fields.max_rotation_deg]
+required = false
+description = "Largest rotation to expect."
+example = 5
+
+[fields.accuracy]
+required = true
+description = "Required position / angle accuracy."
+example = "±0.5 px, ±0.2 deg"
+
+[fields.columns]
+required = true
+description = "Result columns written to results.csv."
+example = ["x", "y", "angle"]

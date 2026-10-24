@@ -1,0 +1,28 @@
+type = "measure3d"
+summary = "3D / height map: height, flatness, coplanarity, volume."
+default_method = "rule"
+
+[fields.sensor]
+required = true
+description = "Sensor and data format (Gocator, Photoneo, height-map TIFF...)."
+example = "Gocator 2510, Point3DGrid"
+
+[fields.reference_plane]
+required = true
+description = "Surface the height is measured from."
+example = "PCB surface around the connector"
+
+[fields.what]
+required = true
+description = "What is measured."
+example = "max height of each pin above the plane"
+
+[fields.column]
+required = true
+description = "Result column name."
+example = "max_height_mm"
+
+[fields.tolerance]
+required = true
+description = "Allowed deviation."
+example = 0.05

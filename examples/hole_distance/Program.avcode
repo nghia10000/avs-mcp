@@ -1,0 +1,156 @@
+public Main()
+{
+	// Reads every PNG in images/ one per iteration.
+	//:HIDDENPORT[inProcessSubdirectories] TRUE
+	//:HIDDENPORT[inInvert] TRUE
+	//:HIDDENPORT[inLoadAlphaChannel] TRUE
+	//:HIDDENPORT[inDelay] TRUE
+	EnumerateImages
+	(
+		inDirectory: "images"
+		inFileType: PNG
+		inSortingOrder: Name
+		inRepeat: False
+		inProcessSubdirectories: False
+		inInvert: False
+		inLoadAlphaChannel: False
+		inDelay: 0
+		outImage: con_5e1a0001_0000_4000_8000_000000000001
+		outFilePath: Nil
+		outFileName: con_5e1a0001_0000_4000_8000_000000000002
+		outIsFirst: con_5e1a0001_0000_4000_8000_000000000010
+		outIsLast: Nil
+	)
+
+	// Dark plate on a bright backlight.
+	ThresholdToRegion
+	(
+		inImage: con_5e1a0001_0000_4000_8000_000000000001
+		inRoi: Nil
+		inMinValue: Nil
+		inMaxValue: 128.000000
+		inHysteresis: 0.000000
+		outRegion: con_5e1a0001_0000_4000_8000_000000000003
+	)
+
+	// Holes = bright areas enclosed by the plate; small specks ignored.
+	RegionHoles
+	(
+		inRegion: con_5e1a0001_0000_4000_8000_000000000003
+		inConnectivity: EightDirections
+		inMinHoleArea: 200
+		inMaxHoleArea: Nil
+		outHoles: con_5e1a0001_0000_4000_8000_000000000004
+	)
+
+	// Rough circle of each hole, used as the search ring for the sub-pixel fit.
+	RegionBoundingCircle
+	(
+		inRegion: con_5e1a0001_0000_4000_8000_000000000004
+		outBoundingCircle: con_5e1a0001_0000_4000_8000_000000000005
+	)
+
+	expression
+	{
+		Circle2D inCircle
+		CircleFittingField outField = "CircleFittingField(inCircle, 12.0)"
+	}
+	(
+		inCircle: con_5e1a0001_0000_4000_8000_000000000005
+		outField: con_5e1a0001_0000_4000_8000_000000000006
+	)
+
+	// Sub-pixel fit to the hole edge (bright hole -> dark plate).
+	FitCircleToEdges
+	(
+		inImage: con_5e1a0001_0000_4000_8000_000000000001
+		inFittingField: con_5e1a0001_0000_4000_8000_000000000006
+		inFittingFieldAlignment: Nil
+		inScanCount: 36
+		inScanWidth: 3
+		inSamplingParams:
+			SamplingParams
+			(
+				Interpolation: Bilinear
+				SamplingStep: 1.000000
+				SampleCount: Nil
+			)
+		inEdgeScanParams:
+			EdgeScanParams
+			(
+				ProfileInterpolation: Quadratic4
+				SmoothingStdDev: 1.000000
+				MinMagnitude: 5.000000
+				EdgeTransition: BrightToDark
+			)
+		inEdgeSelection: Best
+		inLocalBlindness: Nil
+		inMaxIncompleteness: 0.200000
+		inFittingMethod: AlgebraicTaubin
+		inOutlierSuppression: Huber
+		outCircle: con_5e1a0001_0000_4000_8000_000000000007
+		outEdges: Nil
+		outDeviationProfile: Nil
+		outAlignedFittingField: Nil
+		outInliers: Nil
+		outBrightnessProfiles: Nil
+		outResponseProfiles: Nil
+		diagScanSegments: Nil
+		diagSamplingAreas: Nil
+	)
+
+	RemoveNils<Circle2D>
+	(
+		inArray: con_5e1a0001_0000_4000_8000_000000000007
+		outArray: con_5e1a0001_0000_4000_8000_000000000008
+		outElementExisted: Nil
+	)
+
+	// Exactly two holes expected: centers of hole 0 and hole 1.
+	expression
+	{
+		Circle2DArray inCircles
+		Point2D outCenter1 = "inCircles[0].Center"
+		Point2D outCenter2 = "inCircles[1].Center"
+	}
+	(
+		inCircles: con_5e1a0001_0000_4000_8000_000000000008
+		outCenter1: con_5e1a0001_0000_4000_8000_000000000009
+		outCenter2: con_5e1a0001_0000_4000_8000_00000000000a
+	)
+
+	// Center-to-center distance in pixels (set inResolution = mm per pixel for mm).
+	PointToPointDistance
+	(
+		inPoint1: con_5e1a0001_0000_4000_8000_000000000009
+		inPoint2: con_5e1a0001_0000_4000_8000_00000000000a
+		inResolution: 1.000000
+		outDistance: con_5e1a0001_0000_4000_8000_00000000000b
+		outConnectingSegment: con_5e1a0001_0000_4000_8000_00000000000c
+	)
+
+	// One CSV row per image; the first image also writes the header and erases the old file.
+	expression
+	{
+		String inName
+		Real inDistance
+		Bool inIsFirst
+		String outText = "(inIsFirst ? \"image,distance_px\\r\\n\" : \"\") + inName + \",\" + toString(inDistance) + \"\\r\\n\""
+		FileAccessMode outMode = "inIsFirst ? FileAccessMode.CreateOrErase : FileAccessMode.CreateOrAppend"
+	}
+	(
+		inName: con_5e1a0001_0000_4000_8000_000000000002
+		inDistance: con_5e1a0001_0000_4000_8000_00000000000b
+		inIsFirst: con_5e1a0001_0000_4000_8000_000000000010
+		outText: con_5e1a0001_0000_4000_8000_000000000011
+		outMode: con_5e1a0001_0000_4000_8000_000000000012
+	)
+
+	SaveText
+	(
+		inText: con_5e1a0001_0000_4000_8000_000000000011
+		inFileAccessMode: con_5e1a0001_0000_4000_8000_000000000012
+		inFile: "results.csv"
+		inIgnoreErrors: False
+	)
+}

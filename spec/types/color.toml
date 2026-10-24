@@ -1,0 +1,18 @@
+type = "color"
+summary = "Color check / sorting: correct cable color, label color, shade deviation."
+default_method = "rule"
+
+[fields.where]
+required = true
+description = "Area whose color is checked (annotate as rect/polygon)."
+example = "label in top-right corner"
+
+[fields.reference]
+required = true
+description = "Reference color(s) or reference images."
+example = "RGB(200, 30, 30) ± 15, or images/ref_red.png"
+
+[fields.column]
+required = true
+description = "Result column name."
+example = "color_ok"

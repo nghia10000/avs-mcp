@@ -1,0 +1,119 @@
+# Sections every task.toml has, whatever the task type.
+# Step types live in types/*.toml — add a file there to support a new kind of task.
+# Field keys: required, description, example, default (written as-is into a new task.toml instead of a TODO).
+
+[sections.task]
+summary = "What the task is."
+[sections.task.fields.name]
+required = true
+description = "Short task name."
+example = "Hole distance"
+[sections.task.fields.images]
+required = true
+description = "Folder with sample images, relative to the task folder. Include the worst ones (dark, shifted, dirty)."
+example = "images/"
+default = "images/"
+[sections.task.fields.notes]
+required = false
+description = "Anything in free words. Draw on images (annotations.json) instead of describing positions."
+example = "backlit plate, two round holes"
+
+[sections.conditions]
+summary = "How images change between shots."
+[sections.conditions.fields.position]
+required = false
+description = "Shift of the part in the image."
+example = "±30 px"
+[sections.conditions.fields.rotation]
+required = false
+description = "Rotation of the part."
+example = "none"
+[sections.conditions.fields.lighting]
+required = false
+description = "Lighting and its changes (glare, shadows, backlight)."
+example = "backlight, stable"
+[sections.conditions.fields.variants]
+required = false
+description = "Product variants / part numbers handled by the same program."
+example = "one variant"
+
+[sections.calibration]
+summary = "Pixel to real-world units. Required when any step uses unit = 'mm'."
+[sections.calibration.fields.mm_per_px]
+required = false
+description = "Millimetres per pixel."
+example = 0.05
+[sections.calibration.fields.reference]
+required = false
+description = "How the scale was obtained, or a known dimension on the part."
+example = "plate length 60.00 mm"
+
+[sections.output]
+summary = "What the program produces."
+[sections.output.fields.results_csv]
+required = true
+description = "CSV the AVS program writes (one row per image), relative to the task folder."
+example = "results.csv"
+default = "results.csv"
+[sections.output.fields.key]
+required = true
+description = "Column that identifies the image in results.csv and expected.csv."
+example = "image"
+default = "image"
+[sections.output.fields.destination]
+required = false
+description = "Where results go in production (CSV, PLC, HMI...)."
+example = "CSV"
+[sections.output.fields.on_missing]
+required = false
+description = "What to report when a feature is not found."
+example = "NG"
+
+[sections.expected]
+summary = "Ground truth, so results can be checked automatically."
+[sections.expected.fields.file]
+required = false
+description = "CSV with the correct value per image (caliper / CMM / manual OK-NG), relative to the task folder."
+example = "expected.csv"
+
+[step]
+summary = "Common fields of every [[steps]] entry."
+[step.fields.id]
+required = true
+description = "Unique step id."
+example = "hole_distance"
+[step.fields.type]
+required = true
+description = "Step type (see types/)."
+example = "measure"
+[step.fields.method]
+required = true
+description = "rule, deep or hybrid."
+example = "rule"
+[step.fields.after]
+required = false
+description = "Step ids this step needs (alignment, preprocessing...)."
+example = []
+[step.fields.notes]
+required = false
+description = "Free description of this step."
+example = ""
+
+[feature]
+summary = "Optional [[features]]: things the steps refer to."
+[feature.fields.id]
+required = true
+description = "Feature id."
+example = "hole"
+[feature.fields.looks_like]
+required = true
+description = "Appearance: bright/dark, shape, approximate size."
+example = "round, bright on dark plate, ~38 px diameter"
+[feature.fields.count]
+required = false
+description = "How many per image."
+example = 2
+[feature.fields.confused_with]
+required = false
+description = "What it can be mistaken for."
+example = "notch on the top edge"

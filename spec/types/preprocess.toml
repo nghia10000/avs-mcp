@@ -1,0 +1,13 @@
+type = "preprocess"
+summary = "Prepare images for later steps: align, crop ROI, normalize brightness, export training images. The same step is used for training and runtime."
+default_method = "rule"
+
+[fields.operations]
+required = true
+description = "What is done, in order."
+example = ["align to plate (step 'align')", "crop 400x200 around plate", "normalize mean gray to 128"]
+
+[fields.export_dir]
+required = false
+description = "Where processed images are written for Deep Learning Editor."
+example = "train_images/"

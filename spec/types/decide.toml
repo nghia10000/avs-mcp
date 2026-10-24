@@ -1,0 +1,13 @@
+type = "decide"
+summary = "Combine results of other steps into the final verdict."
+default_method = "rule"
+
+[fields.rule]
+required = true
+description = "Verdict logic in words or as an expression over other columns."
+example = "NG if result(scratch) = NG or |distance_mm - 16.00| > 0.05"
+
+[fields.column]
+required = true
+description = "Verdict column name."
+example = "verdict"

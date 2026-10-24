@@ -1,0 +1,38 @@
+type = "measure"
+summary = "Dimension, distance, diameter, angle, gap between features."
+default_method = "rule"
+
+[fields.from]
+required = true
+description = "Start of the measurement (feature + exact point: center, nearest edge, top edge...)."
+example = "center of left hole"
+
+[fields.to]
+required = true
+description = "End of the measurement."
+example = "center of right hole"
+
+[fields.direction]
+required = false
+description = "Straight line between the points, projection on X/Y, perpendicular to an edge..."
+example = "straight line"
+
+[fields.column]
+required = true
+description = "Column name of this value in results.csv / expected.csv."
+example = "distance_mm"
+
+[fields.unit]
+required = true
+description = "px or mm (mm needs [calibration])."
+example = "mm"
+
+[fields.nominal]
+required = false
+description = "Nominal value from the drawing."
+example = 16.0
+
+[fields.tolerance]
+required = true
+description = "Allowed deviation (same unit). Used as pass limit by avs_evaluate."
+example = 0.05

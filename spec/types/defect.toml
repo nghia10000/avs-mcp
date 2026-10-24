@@ -1,0 +1,38 @@
+type = "defect"
+summary = "Surface / appearance defects: scratch, dent, stain, crack, burr, missing coating..."
+default_method = "deep"
+
+[fields.classes]
+required = true
+description = "Defect classes. Give 3-5 annotated example images of each in annotations.json."
+example = ["scratch", "dent", "stain"]
+
+[fields.ng_rule]
+required = true
+description = "When a defect makes the part NG (size, location, count)."
+example = "scratch longer than 2 mm anywhere, or any dent inside the sealing ring"
+
+[fields.not_defects]
+required = true
+description = "Things that look like defects but are OK (texture, printing, removable dust, reflections)."
+example = "machining marks parallel to the long edge"
+
+[fields.roi]
+required = false
+description = "Area to inspect (annotate as rect/polygon with label 'roi')."
+example = "whole plate except 2 mm border"
+
+[fields.dataset]
+required = false
+description = "How many OK / NG images exist per class and whether they are labeled."
+example = "OK 300, scratch 40 labeled, dent 6 unlabeled"
+
+[fields.priority]
+required = true
+description = "Which error is worse: escape (NG passed as OK) or false reject. Give targets."
+example = "0 escapes, false reject < 2%"
+
+[fields.column]
+required = true
+description = "Result column (usually OK/NG)."
+example = "result"

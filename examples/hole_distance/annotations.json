@@ -1,0 +1,9 @@
+{
+  "images": {
+    "back_paralell_1000.png": [
+      {"kind": "line", "points": [[200.1, 250.9], [520.1, 252.4]], "step": "hole_distance", "label": "center to center"},
+      {"kind": "circle", "points": [[200.1, 250.9], [218.9, 250.9]], "feature": "hole", "label": "left hole (center, point on edge)"},
+      {"kind": "circle", "points": [[520.1, 252.4], [538.9, 252.4]], "feature": "hole", "label": "right hole"}
+    ]
+  }
+}

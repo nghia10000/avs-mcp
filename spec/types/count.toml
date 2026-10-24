@@ -1,0 +1,23 @@
+type = "count"
+summary = "Count objects or check presence / absence (missing screw, number of pins...)."
+default_method = "rule"
+
+[fields.object]
+required = true
+description = "What is counted and how it looks (bright/dark, size, shape)."
+example = "pins, dark rectangles ~10x40 px"
+
+[fields.expected_count]
+required = true
+description = "Correct count (or range) for an OK part. Use 1 for a presence check."
+example = 12
+
+[fields.min_size]
+required = false
+description = "Smallest object that still counts (rejects dust / noise)."
+example = "area 50 px"
+
+[fields.column]
+required = true
+description = "Result column name."
+example = "pin_count"

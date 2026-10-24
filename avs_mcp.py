@@ -1,0 +1,337 @@
+"""avs_mcp.py — MCP server (stdio) connecting an AI assistant to Aurora Vision Studio.
+
+Python standard library only (3.11+). Tools:
+  avs_search_filters  search filters in the AVL documentation installed on this machine
+  avs_filter_doc      syntax, parameters and description of one filter or data type
+  avs_search_examples how a filter / formula is written in the official .avcode examples
+  avs_validate        load a project with AuroraVisionAvexeGenerator.exe (no GUI) and report errors
+  avs_open            open a project in Aurora Vision Studio
+  avs_task_types      list step types a task spec can use
+  avs_task_new        create a task folder (task.toml, annotations.json, images/)
+  avs_task_check      check a task spec for missing information
+  avs_evaluate        compare results.csv written by the program with expected.csv
+Prompt:
+  describe_task       interview the user and write the task spec
+
+Paths are auto-detected; override with AVS_DIR and AVL_DOC_DIR.
+"""
+
+import glob
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import task_spec  # noqa: E402
+from evaluate import evaluate  # noqa: E402
+
+VERSION = "0.2.0"
+AV_ROOT = r"C:\Program Files\Aurora Vision"
+
+
+def latest(pattern):
+    """Newest install matching pattern (by version number in the folder name)."""
+    hits = glob.glob(os.path.join(AV_ROOT, pattern))
+    key = lambda p: [int(x) for x in re.findall(r"\d+", os.path.basename(p))]
+    return max(hits, key=key) if hits else ""
+
+
+AVS_DIR = os.environ.get("AVS_DIR") or latest("Aurora Vision Studio 5.* Professional") or latest("Aurora Vision Studio 5.*")
+DOC_DIR = os.environ.get("AVL_DOC_DIR") or os.path.join(latest("Aurora Vision Library 5.*"), "Documentation")
+FUNC_DIR = os.path.join(DOC_DIR, "functions")
+TYPE_DIR = os.path.join(DOC_DIR, "datatypes")
+EXAMPLES_DIR = os.environ.get("AVS_EXAMPLES_DIR") or os.path.join(
+    r"C:\ProgramData\Aurora Vision", os.path.basename(AVS_DIR))
+
+# ------------------------------------------------------------------ documentation
+
+def page_text(path):
+    """Documentation HTML -> plain text without the page menu and footer."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        t = f.read()
+    t = re.sub(r"(?s)<(script|style).*?</\1>", "", t)
+    t = re.sub(r"(?i)<br\s*/?>|</p>|</tr>|</h\d>|</li>|</div>", "\n", t)
+    t = re.sub(r"(?i)</t[dh]>", " | ", t)
+    t = re.sub(r"<[^>]+>", " ", t)
+    t = html.unescape(t).replace("\u200b", "")
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\s*\n\s*", "\n", t).strip()
+    end = t.find("This article is valid for version")
+    if end > 0:
+        t = t[:end]
+    start = t.find("Header:")              # function page: starts at Header
+    if start < 0:
+        start = t.find("Description")       # data type page
+    return t[start:] if start > 0 else t
+
+
+_index = None
+
+def doc_index():
+    """{name: (path, category, summary)} for every function in functions/."""
+    global _index
+    if _index is not None:
+        return _index
+    if not os.path.isdir(FUNC_DIR):
+        raise FileNotFoundError(f"AVL documentation not found at {DOC_DIR}; set AVL_DOC_DIR.")
+    _index = {}
+    for cat in sorted(os.listdir(FUNC_DIR)):
+        d = os.path.join(FUNC_DIR, cat)
+        if not os.path.isdir(d):
+            continue
+        for fn in os.listdir(d):
+            if not fn.endswith(".html") or fn == "index.html":
+                continue
+            p = os.path.join(d, fn)
+            summary = ""
+            try:
+                lines = page_text(p).split("\n")
+                for i, ln in enumerate(lines):          # summary is the line after "Module:" + module name
+                    if ln.startswith("Module:") and i + 2 < len(lines):
+                        summary = lines[i + 2] if lines[i + 1].strip() else lines[i + 3]
+                        break
+            except OSError:
+                pass
+            _index[fn[:-5]] = (p, cat, summary)
+    return _index
+
+
+def search_filters(query, limit=30):
+    words = [w.lower() for w in query.split() if w]
+    if not words:
+        return "Give a keyword."
+    hits = []
+    for name, (_, cat, summary) in doc_index().items():
+        hay = f"{name} {cat} {summary}".lower()
+        if all(w in hay for w in words):
+            score = sum(3 if w in name.lower() else 1 for w in words)
+            hits.append((-score, name, cat, summary))
+    hits.sort()
+    if not hits:
+        return (f"No filter matches '{query}'. Only AVL library functions are indexed; "
+                "in Studio a C++ function Foo_Direct is usually the filter Foo.")
+    out = [f"{len(hits)} match(es), showing {min(limit, len(hits))}:"]
+    out += [f"- {n}  [{c}]  {s}" for _, n, c, s in hits[:limit]]
+    return "\n".join(out)
+
+
+def filter_doc(name):
+    idx = doc_index()
+    if name in idx:
+        return page_text(idx[name][0])
+    tp = os.path.join(TYPE_DIR, name + ".html")
+    if os.path.exists(tp):
+        return page_text(tp)
+    near = [n for n in idx if name.lower() in n.lower()][:15]
+    return f"No page for '{name}'." + (" Similar: " + ", ".join(near) if near else "")
+
+
+def search_examples(query, limit=5, context=12):
+    """.avcode files of the bundled Examples/Tutorial containing every word; shows the first hit in each."""
+    words = [w.lower() for w in query.split() if w]
+    if not words:
+        return "Give a keyword (filter name, formula function, data type...)."
+    files = glob.glob(os.path.join(EXAMPLES_DIR, "**", "*.avcode"), recursive=True)
+    if not files:
+        return f"No .avcode examples under {EXAMPLES_DIR}; set AVS_EXAMPLES_DIR."
+    hits = []
+    for p in files:
+        with open(p, encoding="utf-8-sig", errors="replace") as f:
+            text = f.read()
+        low = text.lower()
+        if all(w in low for w in words):
+            hits.append((-sum(low.count(w) for w in words), p, text))
+    hits.sort()
+    if not hits:
+        return f"No example uses '{query}' ({len(files)} files searched)."
+    out = [f"{len(hits)} example file(s) of {len(files)}, showing {min(limit, len(hits))}:"]
+    for _, p, text in hits[:limit]:
+        lines = text.splitlines()
+        i = next(i for i, ln in enumerate(lines) if words[0] in ln.lower())
+        lo, hi = max(0, i - 2), min(len(lines), i + context)
+        out.append(f"\n== {os.path.relpath(p, EXAMPLES_DIR)} (line {i + 1})")
+        out += lines[lo:hi]
+    return "\n".join(out)
+
+# ------------------------------------------------------------------ Studio
+
+def validate(project):
+    project = os.path.abspath(project)
+    if not project.lower().endswith(".avproj") or not os.path.exists(project):
+        return "Give the path of an existing .avproj file.", True
+    gen = os.path.join(AVS_DIR, "AuroraVisionAvexeGenerator.exe")
+    if not os.path.exists(gen):
+        return f"AuroraVisionAvexeGenerator.exe not found in {AVS_DIR}; set AVS_DIR.", True
+    with tempfile.TemporaryDirectory() as tmp:
+        r = subprocess.run([gen, "-overwrite", "-no-logo", project, os.path.join(tmp, "check.avexe")],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    log = (r.stdout + r.stderr).strip()
+    code = r.returncode - (1 << 32) if r.returncode >= (1 << 31) else r.returncode   # Windows returns negatives as unsigned
+    ok = code == 0
+    head = "VALID: project loads without errors." if ok else f"ERRORS (exit {code})."
+    note = ("\nNote: this only checks loading (filter names, types, connections, formulas). "
+            "The program is not run, so results are not known.")
+    return f"{head}\n\n{log}{note}", not ok
+
+
+def open_project(project):
+    project = os.path.abspath(project)
+    if not os.path.exists(project):
+        return f"File not found: {project}", True
+    subprocess.Popen([os.path.join(AVS_DIR, "AuroraVisionStudio.exe"), project],
+                     creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+    return f"Opening {project} in {os.path.basename(AVS_DIR)}.", False
+
+# ------------------------------------------------------------------ prompt
+
+DESCRIBE_TASK = """You are helping the user describe a machine vision task so that an Aurora Vision program can be built and checked automatically.
+
+Task folder: {task_dir}
+
+1. Call avs_task_types, then ask the user what the program must do and look at their sample images. Pick the step types; split hybrid jobs into steps (e.g. locate -> preprocess -> defect(deep) -> measure -> decide). Geometry that can be defined (position, rotation, ROI, size) is rule-based; appearance that can only be judged by eye goes to deep learning.
+2. Call avs_task_new with the folder and the step types.
+3. Interview the user one topic at a time; do not guess:
+   - exactly what is measured or inspected (from where to where, which edge, which direction)
+   - how each feature looks and what it can be confused with
+   - how images vary (shift, rotation, lighting, variants); ask for the worst images
+   - accuracy: tolerance, mm per pixel
+   - for defects: classes, NG rule, things that look like defects but are OK, dataset size, escape vs false-reject priority
+   - output: columns, OK/NG, destination
+   - ground truth: caliper/CMM values or OK/NG per image -> expected.csv
+4. Ask the user to draw on 1-2 images when positions matter; store the drawing in annotations.json as
+   {{"images": {{"<file>": [{{"kind": "line|point|rect|circle|polygon", "points": [[x, y], ...], "step": "<step id>", "label": ""}}]}}}}
+5. Fill task.toml (replace every TODO), then call avs_task_check and fix everything it reports.
+6. Build the program so it appends one row per image to output.results_csv (SaveText, CreateOrAppend), using the key column and the step columns; look up filters with avs_search_filters / avs_filter_doc and real .avcode syntax with avs_search_examples; check it with avs_validate. After the user runs it, call avs_evaluate and iterate.
+"""
+
+PROMPTS = [
+    {"name": "describe_task",
+     "description": "Interview the user and write a complete task spec (task.toml, annotations.json, expected.csv).",
+     "arguments": [{"name": "task_dir", "description": "Folder for the task", "required": True}]},
+]
+
+# ------------------------------------------------------------------ MCP
+
+def obj(props, required):
+    return {"type": "object", "properties": props, "required": required}
+
+
+S = {"type": "string"}
+TOOLS = [
+    {"name": "avs_search_filters",
+     "description": "Search Aurora Vision filters/functions by keyword (name, category, description), e.g. 'fit segment', 'threshold rgb'.",
+     "inputSchema": obj({"query": S, "limit": {"type": "integer", "default": 30}}, ["query"])},
+    {"name": "avs_filter_doc",
+     "description": "Full documentation of one filter or data type: syntax, parameters, defaults, description, possible errors.",
+     "inputSchema": obj({"name": S}, ["name"])},
+    {"name": "avs_search_examples",
+     "description": "Search the official .avcode Examples/Tutorials installed with Studio for a filter, formula function or syntax "
+                    "(e.g. 'SaveText', 'toString', 'FitCircleToEdges') and show how it is written.",
+     "inputSchema": obj({"query": S, "limit": {"type": "integer", "default": 5}}, ["query"])},
+    {"name": "avs_validate",
+     "description": "Load an .avproj with AuroraVisionAvexeGenerator (no GUI) and report errors. Use after every .avcode edit.",
+     "inputSchema": obj({"project": S}, ["project"])},
+    {"name": "avs_open",
+     "description": "Open an .avproj in Aurora Vision Studio so the user can press Run.",
+     "inputSchema": obj({"project": S}, ["project"])},
+    {"name": "avs_task_types",
+     "description": "List the step types a task spec can use (measure, locate, count, defect, classify, read, ...) and their required fields.",
+     "inputSchema": obj({}, [])},
+    {"name": "avs_task_new",
+     "description": "Create a task folder: task.toml skeleton with TODOs for the given step types, empty annotations.json, images/.",
+     "inputSchema": obj({"task_dir": S, "step_types": {"type": "array", "items": S}, "name": S},
+                        ["task_dir", "step_types"])},
+    {"name": "avs_task_check",
+     "description": "Check a task folder: missing/TODO fields, step references, images, annotations, expected.csv columns. Returns the spec.",
+     "inputSchema": obj({"task_dir": S}, ["task_dir"])},
+    {"name": "avs_evaluate",
+     "description": "Compare the program's results.csv with expected.csv of a task: numeric error vs tolerance, OK/NG escapes and false rejects.",
+     "inputSchema": obj({"task_dir": S, "results": S, "expected": S, "key": S,
+                         "tolerances": {"type": "object", "additionalProperties": {"type": "number"}}}, ["task_dir"])},
+]
+
+
+def call_tool(name, a):
+    if name == "avs_search_filters":
+        return search_filters(a.get("query", ""), int(a.get("limit", 30))), False
+    if name == "avs_filter_doc":
+        return filter_doc(a.get("name", "")), False
+    if name == "avs_search_examples":
+        return search_examples(a.get("query", ""), int(a.get("limit", 5))), False
+    if name == "avs_validate":
+        return validate(a.get("project", ""))
+    if name == "avs_open":
+        return open_project(a.get("project", ""))
+    if name == "avs_task_types":
+        return task_spec.list_types(), False
+    if name == "avs_task_new":
+        return task_spec.new_task(a.get("task_dir", ""), a.get("step_types") or [], a.get("name", ""))
+    if name == "avs_task_check":
+        return task_spec.check_task(a.get("task_dir", ""))
+    if name == "avs_evaluate":
+        return evaluate(a.get("task_dir", ""), a.get("results"), a.get("expected"), a.get("key"), a.get("tolerances"))
+    return f"Unknown tool: {name}", True
+
+
+def get_prompt(name, args):
+    if name != "describe_task":
+        raise ValueError(f"Unknown prompt: {name}")
+    text = DESCRIBE_TASK.format(task_dir=args.get("task_dir", "<ask the user>"))
+    return {"description": PROMPTS[0]["description"],
+            "messages": [{"role": "user", "content": {"type": "text", "text": text}}]}
+
+
+def handle(msg):
+    method, mid = msg.get("method"), msg.get("id")
+    if method == "initialize":
+        ver = msg.get("params", {}).get("protocolVersion", "2025-06-18")
+        result = {"protocolVersion": ver, "capabilities": {"tools": {}, "prompts": {}},
+                  "serverInfo": {"name": "avs", "version": VERSION}}
+    elif method == "tools/list":
+        result = {"tools": TOOLS}
+    elif method == "tools/call":
+        p = msg.get("params", {})
+        try:
+            text, err = call_tool(p.get("name"), p.get("arguments") or {})
+        except Exception as e:  # tool errors go back to the assistant instead of killing the server
+            text, err = f"{type(e).__name__}: {e}", True
+        result = {"content": [{"type": "text", "text": text}], "isError": err}
+    elif method == "prompts/list":
+        result = {"prompts": PROMPTS}
+    elif method == "prompts/get":
+        p = msg.get("params", {})
+        try:
+            result = get_prompt(p.get("name"), p.get("arguments") or {})
+        except ValueError as e:
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": str(e)}}
+    elif method == "ping":
+        result = {}
+    elif mid is None:
+        return None                                   # notification (e.g. notifications/initialized)
+    else:
+        return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+    return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+
+def main():
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            resp = handle(json.loads(line))
+        except Exception as e:
+            resp = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": str(e)}}
+        if resp is not None:
+            sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()

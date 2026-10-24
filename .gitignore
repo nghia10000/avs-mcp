@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+# sample images are not published; put your own in examples/*/images/
+examples/*/images/*
+!examples/*/images/.gitkeep
+# written when the example program runs
+examples/*/results.csv
+# Studio-generated files
+*.avview
+*.avexe
+*.bak
