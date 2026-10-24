@@ -25,6 +25,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import task_spec  # noqa: E402
@@ -233,13 +234,71 @@ def run_project(project, task_dir=None, timeout=600):
     return "\n".join(out), not ok
 
 
-def open_project(project):
+def studio_windows():
+    """[(hwnd, title)] of visible top-level windows owned by AuroraVisionStudio.exe."""
+    import ctypes
+    from ctypes import wintypes
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    found = []
+
+    def image_name(pid):
+        h = kernel32.OpenProcess(0x1000, False, pid)    # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ""
+        try:
+            buf, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+            ok = kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size))
+            return os.path.basename(buf.value) if ok else ""
+        finally:
+            kernel32.CloseHandle(h)
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _):
+        n = user32.GetWindowTextLengthW(hwnd)
+        if user32.IsWindowVisible(hwnd) and n:
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if image_name(pid.value).lower() == "auroravisionstudio.exe":
+                buf = ctypes.create_unicode_buffer(n + 1)
+                user32.GetWindowTextW(hwnd, buf, n + 1)
+                found.append((hwnd, buf.value))
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return found
+
+
+def open_project(project, wait=90):
     project = os.path.abspath(project)
     if not os.path.exists(project):
         return f"File not found: {project}", True
-    subprocess.Popen([os.path.join(AVS_DIR, "AuroraVisionStudio.exe"), project],
-                     creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
-    return f"Opening {project} in {os.path.basename(AVS_DIR)}.", False
+    name = os.path.basename(project).lower()
+    shows = lambda title: title.lower().rstrip("*").strip().endswith(name)
+
+    # Studio allows one instance: a second launch only shows "already running" and exits 0.
+    running = studio_windows()
+    for hwnd, title in running:
+        if shows(title):
+            import ctypes
+            ctypes.windll.user32.ShowWindow(hwnd, 9)          # SW_RESTORE
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+            return f"Already open in Studio: '{title}'. Brought the window to the front.", False
+    if running:
+        return (f"Aurora Vision Studio is already running ('{running[0][1]}') and allows only one instance, "
+                f"so {project} was NOT opened. Ask the user to close Studio (or use File > Open) and call avs_open again."), True
+
+    p = subprocess.Popen([os.path.join(AVS_DIR, "AuroraVisionStudio.exe"), project],
+                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+    for _ in range(wait):
+        for _, title in studio_windows():
+            if shows(title):
+                return f"Opened in Studio: '{title}'.", False
+        if p.poll() is not None:
+            return f"Studio exited (code {p.returncode}) without opening {project}.", True
+        time.sleep(1)
+    titles = [t for _, t in studio_windows()]
+    return (f"Studio started but no window shows {os.path.basename(project)} after {wait} s "
+            f"(windows: {titles or 'none'}). It may be waiting on a dialog or license prompt."), True
 
 # ------------------------------------------------------------------ prompt
 
@@ -297,7 +356,8 @@ TOOLS = [
                     "With task_dir: clears the task's results CSV first and runs avs_evaluate afterwards.",
      "inputSchema": obj({"project": S, "task_dir": S, "timeout": {"type": "integer", "default": 600}}, ["project"])},
     {"name": "avs_open",
-     "description": "Open an .avproj in Aurora Vision Studio so the user can press Run.",
+     "description": "Open an .avproj in Aurora Vision Studio so the user can press Run. Waits until a Studio window shows the project; "
+                    "errors if Studio is already running with another project (only one instance is allowed).",
      "inputSchema": obj({"project": S}, ["project"])},
     {"name": "avs_task_types",
      "description": "List the step types a task spec can use (measure, locate, count, defect, classify, read, ...) and their required fields.",
