@@ -5,6 +5,7 @@ Python standard library only (3.11+). Tools:
   avs_filter_doc      syntax, parameters and description of one filter or data type
   avs_search_examples how a filter / formula is written in the official .avcode examples
   avs_validate        load a project with AuroraVisionAvexeGenerator.exe (no GUI) and report errors
+  avs_run             run a project headlessly with Aurora Vision Runtime (+ evaluate a task)
   avs_open            open a project in Aurora Vision Studio
   avs_task_types      list step types a task spec can use
   avs_task_new        create a task folder (task.toml, annotations.json, images/)
@@ -13,7 +14,7 @@ Python standard library only (3.11+). Tools:
 Prompt:
   describe_task       interview the user and write the task spec
 
-Paths are auto-detected; override with AVS_DIR and AVL_DOC_DIR.
+Paths are auto-detected; override with AVS_DIR, AVS_RUNTIME_DIR, AVL_DOC_DIR and AVS_EXAMPLES_DIR.
 """
 
 import glob
@@ -29,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import task_spec  # noqa: E402
 from evaluate import evaluate  # noqa: E402
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 AV_ROOT = r"C:\Program Files\Aurora Vision"
 
 
@@ -41,6 +42,7 @@ def latest(pattern):
 
 
 AVS_DIR = os.environ.get("AVS_DIR") or latest("Aurora Vision Studio 5.* Professional") or latest("Aurora Vision Studio 5.*")
+RUNTIME_DIR = os.environ.get("AVS_RUNTIME_DIR") or latest("Aurora Vision Studio 5.* Runtime")
 DOC_DIR = os.environ.get("AVL_DOC_DIR") or os.path.join(latest("Aurora Vision Library 5.*"), "Documentation")
 FUNC_DIR = os.path.join(DOC_DIR, "functions")
 TYPE_DIR = os.path.join(DOC_DIR, "datatypes")
@@ -178,6 +180,59 @@ def validate(project):
     return f"{head}\n\n{log}{note}", not ok
 
 
+def run_project(project, task_dir=None, timeout=600):
+    """Build an .avexe next to the project (relative paths resolve from there) and run it with AuroraVisionConsole."""
+    project = os.path.abspath(project)
+    if not project.lower().endswith(".avproj") or not os.path.exists(project):
+        return "Give the path of an existing .avproj file.", True
+    gen = os.path.join(AVS_DIR, "AuroraVisionAvexeGenerator.exe")
+    console = os.path.join(RUNTIME_DIR, "AuroraVisionConsole.exe")
+    if not os.path.exists(console):
+        return ("AuroraVisionConsole.exe not found: install Aurora Vision Studio Runtime (same version as Studio) "
+                "or set AVS_RUNTIME_DIR.", True)
+    pdir = os.path.dirname(project)
+    exe = os.path.join(pdir, ".avs_run.avexe")
+
+    results = None
+    if task_dir:
+        spec = task_spec.load_task(task_dir)
+        results = os.path.join(task_dir, spec.get("output", {}).get("results_csv", "results.csv"))
+        if os.path.exists(results):
+            os.remove(results)                          # programs append; start from an empty file
+
+    before = {f: os.path.getmtime(os.path.join(pdir, f)) for f in os.listdir(pdir)}
+    try:
+        g = subprocess.run([gen, "-overwrite", "-no-logo", project, exe],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        if g.returncode != 0 or not os.path.exists(exe):
+            return f"Build failed (fix with avs_validate):\n{(g.stdout + g.stderr).strip()}", True
+        try:
+            r = subprocess.run([console, exe], cwd=pdir, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return (f"Program still running after {timeout} s and was stopped. "
+                    "Check that EnumerateImages has inRepeat = False and no loop waits for a camera or HMI."), True
+    finally:
+        if os.path.exists(exe):
+            os.remove(exe)
+
+    log = "\n".join(ln for ln in (r.stdout + r.stderr).splitlines()
+                    if ln.strip() and not set(ln.strip()) <= {"-"} and "loading:" not in ln)
+    ok = "Program successfully finished" in log and "[Error]" not in log   # exit code is 0 even on failure
+    changed = sorted(f for f in os.listdir(pdir)
+                     if f != os.path.basename(exe) and os.path.getmtime(os.path.join(pdir, f)) != before.get(f))
+    out = [("FINISHED" if ok else "FAILED") + f" — {os.path.basename(project)} with {os.path.basename(RUNTIME_DIR)}",
+           "", log or "(no output)", "", "Files written in the project folder: " + (", ".join(changed) or "none")]
+    if task_dir and ok:
+        if results and os.path.exists(results):
+            text, _ = evaluate(task_dir)
+            out += ["", "avs_evaluate:", text]
+        else:
+            out += ["", f"Program did not write {results} — check the SaveText path."]
+            ok = False
+    return "\n".join(out), not ok
+
+
 def open_project(project):
     project = os.path.abspath(project)
     if not os.path.exists(project):
@@ -205,7 +260,8 @@ Task folder: {task_dir}
 4. Ask the user to draw on 1-2 images when positions matter; store the drawing in annotations.json as
    {{"images": {{"<file>": [{{"kind": "line|point|rect|circle|polygon", "points": [[x, y], ...], "step": "<step id>", "label": ""}}]}}}}
 5. Fill task.toml (replace every TODO), then call avs_task_check and fix everything it reports.
-6. Build the program so it appends one row per image to output.results_csv (SaveText, CreateOrAppend), using the key column and the step columns; look up filters with avs_search_filters / avs_filter_doc and real .avcode syntax with avs_search_examples; check it with avs_validate. After the user runs it, call avs_evaluate and iterate.
+6. Build the program so it appends one row per image to output.results_csv (SaveText, CreateOrAppend), using the key column and the step columns; look up filters with avs_search_filters / avs_filter_doc and real .avcode syntax with avs_search_examples; check it with avs_validate.
+7. Run it with avs_run (project + task_dir): it executes headlessly and evaluates the results. Fix the program and repeat until avs_evaluate passes; if the Runtime is not installed, ask the user to press Run (avs_open) and then call avs_evaluate.
 """
 
 PROMPTS = [
@@ -235,6 +291,11 @@ TOOLS = [
     {"name": "avs_validate",
      "description": "Load an .avproj with AuroraVisionAvexeGenerator (no GUI) and report errors. Use after every .avcode edit.",
      "inputSchema": obj({"project": S}, ["project"])},
+    {"name": "avs_run",
+     "description": "Run an .avproj headlessly with Aurora Vision Runtime (AuroraVisionConsole) until the program finishes, "
+                    "e.g. after EnumerateImages has gone through a folder. Relative paths resolve from the project folder. "
+                    "With task_dir: clears the task's results CSV first and runs avs_evaluate afterwards.",
+     "inputSchema": obj({"project": S, "task_dir": S, "timeout": {"type": "integer", "default": 600}}, ["project"])},
     {"name": "avs_open",
      "description": "Open an .avproj in Aurora Vision Studio so the user can press Run.",
      "inputSchema": obj({"project": S}, ["project"])},
@@ -264,6 +325,8 @@ def call_tool(name, a):
         return search_examples(a.get("query", ""), int(a.get("limit", 5))), False
     if name == "avs_validate":
         return validate(a.get("project", ""))
+    if name == "avs_run":
+        return run_project(a.get("project", ""), a.get("task_dir"), int(a.get("timeout", 600)))
     if name == "avs_open":
         return open_project(a.get("project", ""))
     if name == "avs_task_types":

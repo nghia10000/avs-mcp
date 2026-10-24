@@ -182,5 +182,31 @@ class Installed(unittest.TestCase):
         self.assertFalse(err, text)
 
 
+@unittest.skipUnless(os.path.exists(os.path.join(avs_mcp.RUNTIME_DIR, "AuroraVisionConsole.exe")),
+                     "Aurora Vision Studio Runtime not installed")
+class Run(unittest.TestCase):
+    def test_run_example_and_evaluate(self):
+        if not any(f.endswith(".png") for f in os.listdir(os.path.join(EXAMPLE, "images"))):
+            self.skipTest("example images are not in the repository")
+        text, err = call("avs_run", project=os.path.join(EXAMPLE, "HoleDistance.avproj"), task_dir=EXAMPLE)
+        self.assertFalse(err, text)
+        self.assertIn("FINISHED", text)
+        self.assertIn("results.csv", text)
+        self.assertIn("PASS", text)
+        self.assertFalse(os.path.exists(os.path.join(EXAMPLE, ".avs_run.avexe")))
+
+    def test_run_failure_is_reported(self):
+        d = tempfile.mkdtemp()
+        try:
+            for f in ("HoleDistance.avproj", "Program.avcode"):
+                shutil.copy(os.path.join(EXAMPLE, f), d)       # no images/ folder here
+            text, err = call("avs_run", project=os.path.join(d, "HoleDistance.avproj"))
+            self.assertTrue(err, text)
+            self.assertIn("FAILED", text)
+            self.assertIn("Directory not found", text)
+        finally:
+            shutil.rmtree(d)
+
+
 if __name__ == "__main__":
     unittest.main()
