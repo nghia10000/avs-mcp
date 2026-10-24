@@ -45,6 +45,7 @@ Install paths are detected under `C:\Program Files\Aurora Vision`; override with
 | `avs_task_types` | List step types for task specs |
 | `avs_task_new` | Create a task folder skeleton |
 | `avs_task_check` | Report missing / TODO information in a task spec |
+| `avs_annotate` | Local web page to mark each image OK / NG and draw defects or measurements on it (see below) |
 | `avs_evaluate` | Compare the program's `results.csv` with `expected.csv` |
 
 Prompt: **`describe_task`** — the assistant interviews you and writes the task spec.
@@ -58,8 +59,19 @@ my_task/
 ├── task.toml          what to do: common sections + one [[steps]] entry per step
 ├── annotations.json   what you drew on the images (lines, points, rects, circles, polygons)
 ├── expected.csv       ground truth per image (caliper / CMM values, OK/NG)
+├── annotated/         the images as you marked them (written by avs_annotate, read by the assistant)
 └── images/            sample images, including the worst ones
 ```
+
+### Annotation page
+
+`avs_annotate` (or `python annotate.py <task_dir>`) opens a page on `127.0.0.1` where you:
+
+- mark every image **OK / NG** and add a note — saved as the verdict column of `expected.csv`;
+- draw each defect or measurement as a **rect, polygon, line, circle or point**, give it a **class** and a **description** of what exactly is wrong, and link it to a step or feature;
+- drag **Black / White** levels to reveal faint defects in dark or bright areas — the levels are saved per image.
+
+Save writes `annotations.json`, `expected.csv` (other columns are kept) and `annotated/*.png`, where every image is rendered with its levels, shapes, classes and descriptions. The assistant reads those PNGs, so it sees exactly what you marked instead of guessing from the raw image.
 
 `task.toml` has three layers:
 
@@ -71,7 +83,7 @@ Only what must be machine-checked is structured (coordinates, tolerances, ground
 
 ### Workflow
 
-1. `describe_task` → task folder filled in, `avs_task_check` clean.
+1. `describe_task` → task folder filled in, images marked with `avs_annotate`, `avs_task_check` clean.
 2. The assistant writes the `.avcode` program; it appends one row per image to `results.csv`; `avs_validate` passes.
 3. `avs_run` with `task_dir` → runs the program over the images and evaluates: error vs tolerance, escapes / false rejects.
 4. The assistant fixes the program and repeats until it passes. (No Runtime? Press Run in Studio via `avs_open`, then `avs_evaluate`.)
@@ -86,7 +98,7 @@ Notes on `avs_run`: the `.avexe` is built next to the project because relative p
 
 - [x] `avs_run` — headless run with Aurora Vision Studio Runtime.
 - [ ] Programs that wait for a camera, PLC or HMI input never finish under `avs_run`; use image folders (`EnumerateImages`, `inRepeat = False`) for testing.
-- [ ] Local annotation UI that writes the task folder (draw measurements, ROIs and defects on images).
+- [x] Local annotation UI that writes the task folder (`avs_annotate`).
 - [ ] Deep Learning helpers: export preprocessed training images, read model results.
 - [ ] Studio 5.5 / 5.7 testing, Runtime-only installs.
 
@@ -111,4 +123,5 @@ MCP server giúp trợ lý AI viết và kiểm tra chương trình **Aurora Vis
 - Cài: clone repo, thêm vào `.mcp.json` như trên. Cần Python 3.12+, không cần cài thêm thư viện.
 - Mô tả bài toán: gọi prompt `describe_task`, trợ lý sẽ hỏi từng ý (đo gì, chi tiết trông thế nào, ảnh thay đổi ra sao, dung sai, đáp án mẫu…) rồi tạo thư mục task.
 - Bài toán phức tạp = chuỗi bước, mỗi bước một loại (`measure`, `defect`, …) và ghi rõ `rule` / `deep`.
-- Chưa có: giao diện vẽ đánh dấu, hỗ trợ Deep Learning — xem roadmap.
+- Đánh dấu ảnh: `avs_annotate` mở trang web cục bộ — chọn OK/NG cho từng ảnh, khoanh lỗi (hộp, đa giác, đường, tròn, điểm) kèm loại lỗi và mô tả, kéo mức Black/White để thấy lỗi mờ. Lưu ra `annotations.json`, `expected.csv` và `annotated/*.png` để trợ lý xem đúng chỗ bạn khoanh.
+- Chưa có: hỗ trợ Deep Learning — xem roadmap.

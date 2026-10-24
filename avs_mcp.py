@@ -10,6 +10,7 @@ Python standard library only (3.11+). Tools:
   avs_task_types      list step types a task spec can use
   avs_task_new        create a task folder (task.toml, annotations.json, images/)
   avs_task_check      check a task spec for missing information
+  avs_annotate        local web page to draw defects / mark OK-NG on the task images
   avs_evaluate        compare results.csv written by the program with expected.csv
 Prompt:
   describe_task       interview the user and write the task spec
@@ -29,6 +30,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import task_spec  # noqa: E402
+from annotate import annotate_tool  # noqa: E402
 from evaluate import evaluate  # noqa: E402
 
 VERSION = "0.3.0"
@@ -316,8 +318,11 @@ Task folder: {task_dir}
    - for defects: classes, NG rule, things that look like defects but are OK, dataset size, escape vs false-reject priority
    - output: columns, OK/NG, destination
    - ground truth: caliper/CMM values or OK/NG per image -> expected.csv
-4. Ask the user to draw on 1-2 images when positions matter; store the drawing in annotations.json as
-   {{"images": {{"<file>": [{{"kind": "line|point|rect|circle|polygon", "points": [[x, y], ...], "step": "<step id>", "label": ""}}]}}}}
+4. Call avs_annotate and ask the user to mark every image OK/NG and draw each defect / measurement with a class and a description
+   (it writes annotations.json, the verdict column of expected.csv and annotated/*.png). Open the annotated/*.png files and read
+   every description before writing the program; ask about anything unclear. annotations.json format:
+   {{"images": {{"<file>": [{{"kind": "line|point|rect|circle|polygon", "points": [[x, y], ...], "class": "", "label": "", "step": "<step id>"}}]}},
+    "image_info": {{"<file>": {{"verdict": "OK|NG", "note": "", "levels": [black, white]}}}}}}
 5. Fill task.toml (replace every TODO), then call avs_task_check and fix everything it reports.
 6. Build the program so it appends one row per image to output.results_csv (SaveText, CreateOrAppend), using the key column and the step columns; look up filters with avs_search_filters / avs_filter_doc and real .avcode syntax with avs_search_examples; check it with avs_validate.
 7. Run it with avs_run (project + task_dir): it executes headlessly and evaluates the results. Fix the program and repeat until avs_evaluate passes; if the Runtime is not installed, ask the user to press Run (avs_open) and then call avs_evaluate.
@@ -369,6 +374,11 @@ TOOLS = [
     {"name": "avs_task_check",
      "description": "Check a task folder: missing/TODO fields, step references, images, annotations, expected.csv columns. Returns the spec.",
      "inputSchema": obj({"task_dir": S}, ["task_dir"])},
+    {"name": "avs_annotate",
+     "description": "Open a local web page (and the browser) where the user marks each image of a task OK/NG and draws defects or "
+                    "measurements (rect, polygon, line, circle, point) with a class and a description. Save writes annotations.json, "
+                    "the verdict column of expected.csv and annotated/*.png — read those PNGs to see exactly what the user marked.",
+     "inputSchema": obj({"task_dir": S, "open_browser": {"type": "boolean", "default": True}}, ["task_dir"])},
     {"name": "avs_evaluate",
      "description": "Compare the program's results.csv with expected.csv of a task: numeric error vs tolerance, OK/NG escapes and false rejects.",
      "inputSchema": obj({"task_dir": S, "results": S, "expected": S, "key": S,
@@ -395,6 +405,8 @@ def call_tool(name, a):
         return task_spec.new_task(a.get("task_dir", ""), a.get("step_types") or [], a.get("name", ""))
     if name == "avs_task_check":
         return task_spec.check_task(a.get("task_dir", ""))
+    if name == "avs_annotate":
+        return annotate_tool(a.get("task_dir", ""), bool(a.get("open_browser", True)))
     if name == "avs_evaluate":
         return evaluate(a.get("task_dir", ""), a.get("results"), a.get("expected"), a.get("key"), a.get("tolerances"))
     return f"Unknown tool: {name}", True

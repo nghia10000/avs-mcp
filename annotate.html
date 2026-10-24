@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AVS Annotate</title>
+<style>
+  :root {
+    --bg: #16181c; --panel: #1e2126; --line: #2e3238; --text: #e4e6ea; --muted: #8b919a;
+    --accent: #4c9aff; --ok: #2fbf71; --ng: #ff4d4f; --warn: #f5a524;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.4 "Segoe UI", system-ui, sans-serif; }
+  body { display: grid; grid-template-columns: 200px 1fr 300px; grid-template-rows: 44px 1fr 26px; height: 100vh; }
+  header { grid-column: 1 / 4; display: flex; align-items: center; gap: 6px; padding: 0 10px;
+    background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 14px; margin: 0 12px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+  button { background: #2a2e35; color: var(--text); border: 1px solid var(--line); border-radius: 5px;
+    padding: 4px 9px; cursor: pointer; font: inherit; white-space: nowrap; }
+  button:hover { border-color: #4a505a; }
+  button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.ok.on { background: var(--ok); border-color: var(--ok); }
+  button.ng.on { background: var(--ng); border-color: var(--ng); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--ng); }
+  .sep { width: 1px; height: 24px; background: var(--line); margin: 0 4px; }
+  .grow { flex: 1; }
+  label.lv { display: flex; align-items: center; gap: 4px; color: var(--muted); }
+  label.lv input { width: 90px; }
+  #list { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); }
+  #list div { padding: 6px 10px; cursor: pointer; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid #23272c; }
+  #list div.cur { background: #2b3340; }
+  #list .badge { font-size: 11px; padding: 0 5px; border-radius: 3px; min-width: 26px; text-align: center; }
+  .b-OK { background: var(--ok); color: #fff; } .b-NG { background: var(--ng); color: #fff; } .b- { background: #333; color: var(--muted); }
+  #list .n { margin-left: auto; color: var(--muted); font-size: 11px; }
+  #stage { position: relative; overflow: hidden; background: #0e0f11; }
+  #cv { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  #side { overflow-y: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 10px; }
+  #side h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 14px 0 6px; }
+  #side h2:first-child { margin-top: 0; }
+  textarea, input[type=text], select { width: 100%; background: #15171a; color: var(--text); border: 1px solid var(--line);
+    border-radius: 5px; padding: 5px 7px; font: inherit; }
+  textarea { resize: vertical; min-height: 54px; }
+  .row { display: flex; gap: 6px; }
+  .row > * { flex: 1; }
+  #shapes div { padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px; margin-bottom: 4px; cursor: pointer;
+    display: flex; gap: 6px; align-items: baseline; }
+  #shapes div.sel { border-color: var(--accent); background: #22303f; }
+  #shapes .sw { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  #shapes .d { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #editor { border: 1px solid var(--accent); border-radius: 6px; padding: 8px; margin-top: 8px; display: none; }
+  #editor label { display: block; color: var(--muted); margin: 6px 0 2px; }
+  footer { grid-column: 1 / 4; display: flex; gap: 16px; align-items: center; padding: 0 10px;
+    background: var(--panel); border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  #status.err { color: var(--ng); } #status.good { color: var(--ok); }
+  .hint { color: var(--muted); font-size: 12px; }
+  kbd { background: #2a2e35; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">AVS Annotate</h1>
+  <button data-tool="select" title="Select / move (V)">Select</button>
+  <button data-tool="rect" title="Rectangle (R)">Rect</button>
+  <button data-tool="polygon" title="Polygon (P) — click points, Enter or double-click to finish">Polygon</button>
+  <button data-tool="line" title="Line (L)">Line</button>
+  <button data-tool="circle" title="Circle (C) — center, then edge">Circle</button>
+  <button data-tool="point" title="Point (T)">Point</button>
+  <div class="sep"></div>
+  <label class="lv" title="Black point: pixels at or below become black">Black <input id="lo" type="range" min="0" max="254" value="0"></label>
+  <label class="lv" title="White point: pixels at or above become white. Lower it to see faint defects in dark parts">White <input id="hi" type="range" min="1" max="255" value="255"></label>
+  <button id="resetLv" title="Reset levels">Reset</button>
+  <button id="fit" title="Fit image (F)">Fit</button>
+  <div class="grow"></div>
+  <button id="prev" title="Previous image (←)">◀</button>
+  <button id="next" title="Next image (→)">▶</button>
+  <button id="save" class="primary" title="Save (Ctrl+S)">Save</button>
+</header>
+
+<nav id="list"></nav>
+
+<main id="stage"><canvas id="cv"></canvas></main>
+
+<aside id="side">
+  <h2>Verdict</h2>
+  <div class="row">
+    <button class="ok" data-verdict="OK" title="(O)">OK</button>
+    <button class="ng" data-verdict="NG" title="(N)">NG</button>
+    <button data-verdict="" title="Not decided">?</button>
+  </div>
+  <h2>Image note</h2>
+  <textarea id="note" placeholder="Why OK / NG, what to watch for on this image…"></textarea>
+  <h2>Shapes</h2>
+  <div id="shapes"></div>
+  <div id="editor">
+    <label for="cls">Class (defect type)</label>
+    <input id="cls" type="text" list="classes" placeholder="e.g. edge_gap, seal_gap, scratch">
+    <datalist id="classes"></datalist>
+    <label for="desc">Description — what exactly is wrong here</label>
+    <textarea id="desc" placeholder="e.g. tamper band separated from the cap, faint bright line, only visible with White ≈ 40"></textarea>
+    <label for="ref">Belongs to step / feature</label>
+    <select id="ref"></select>
+    <div class="row" style="margin-top:8px"><button id="del" class="danger" title="Delete">Delete shape</button></div>
+  </div>
+  <h2>Keys</h2>
+  <div class="hint">
+    <kbd>V</kbd> select · <kbd>R</kbd> rect · <kbd>P</kbd> polygon · <kbd>L</kbd> line · <kbd>C</kbd> circle · <kbd>T</kbd> point<br>
+    <kbd>O</kbd>/<kbd>N</kbd> OK/NG · <kbd>←</kbd>/<kbd>→</kbd> image · <kbd>Del</kbd> delete · <kbd>Esc</kbd> cancel<br>
+    wheel zoom · right-drag or <kbd>Space</kbd>+drag pan · <kbd>Ctrl</kbd>+<kbd>S</kbd> save
+  </div>
+</aside>
+
+<footer>
+  <span id="pos">–</span>
+  <span id="zoom">–</span>
+  <span class="grow"></span>
+  <span id="status">Loading…</span>
+</footer>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const cv = $("#cv"), ctx = cv.getContext("2d");
+const PALETTE = ["#ff4d4f", "#f5a524", "#4c9aff", "#2fbf71", "#c36bff", "#ff7ac6", "#2ad1d1", "#d4e157"];
+
+let T = null;                 // task from the server
+let shapes = {};              // image -> [{kind, points, class, label, step?, feature?}]
+let info = {};                // image -> {verdict, note, levels: [lo, hi]}
+let cur = null;               // current image name
+const cache = {};             // image -> {img, data (ImageData), w, h}
+let proc = document.createElement("canvas");   // current image with levels applied
+let view = { s: 1, x: 0, y: 0 };
+let tool = "select", drawing = null, sel = -1, drag = null, dirty = false, spaceDown = false, lastClass = "";
+
+function status(msg, cls = "") { const s = $("#status"); s.textContent = msg; s.className = cls; }
+function color(c) { let h = 0; for (const ch of c || "") h = (h * 31 + ch.charCodeAt(0)) >>> 0; return c ? PALETTE[h % PALETTE.length] : "#ffd400"; }
+function setDirty(v = true) { dirty = v; $("#save").textContent = v ? "Save *" : "Save"; }
+const list = () => (shapes[cur] = shapes[cur] || []);
+const inf = () => (info[cur] = info[cur] || {});
+
+// ---------------------------------------------------------------- loading
+async function init() {
+  T = await (await fetch("/api/task")).json();
+  document.title = `${T.name} — AVS Annotate`;
+  $("#title").textContent = T.name;
+  $("#title").title = T.task_dir;
+  shapes = JSON.parse(JSON.stringify(T.annotations || {}));
+  info = JSON.parse(JSON.stringify(T.image_info || {}));
+  refreshClasses();
+  const ref = $("#ref");
+  ref.innerHTML = `<option value="">—</option>` +
+    T.steps.map(s => `<option value="step:${s}">step: ${s}</option>`).join("") +
+    T.features.map(f => `<option value="feature:${f}">feature: ${f}</option>`).join("");
+  renderList();
+  if (T.images.length) await open(T.images[0]);
+  status(`${T.images.length} image(s) · verdicts → ${T.expected_file} [${T.verdict_col}]`);
+}
+
+function loadImage(name) {
+  if (cache[name]) return Promise.resolve(cache[name]);
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const g = c.getContext("2d"); g.drawImage(img, 0, 0);
+      cache[name] = { img, data: g.getImageData(0, 0, c.width, c.height), w: c.width, h: c.height };
+      res(cache[name]);
+    };
+    img.onerror = () => rej(new Error(`The browser cannot show ${name} (TIFF?). Convert it to PNG.`));
+    img.src = "/img/" + encodeURIComponent(name);
+  });
+}
+
+function levelsCanvas(name, target) {
+  const c = cache[name], [lo, hi] = (info[name] && info[name].levels) || [0, 255];
+  target.width = c.w; target.height = c.h;
+  const out = new ImageData(new Uint8ClampedArray(c.data.data), c.w, c.h);
+  if (lo !== 0 || hi !== 255) {
+    const lut = new Uint8ClampedArray(256), k = 255 / Math.max(1, hi - lo);
+    for (let v = 0; v < 256; v++) lut[v] = (v - lo) * k;
+    const d = out.data;
+    for (let i = 0; i < d.length; i += 4) { d[i] = lut[d[i]]; d[i + 1] = lut[d[i + 1]]; d[i + 2] = lut[d[i + 2]]; }
+  }
+  target.getContext("2d").putImageData(out, 0, 0);
+  return target;
+}
+
+async function open(name) {
+  try { await loadImage(name); } catch (e) { status(e.message, "err"); return; }
+  cur = name; sel = -1; drawing = null;
+  const [lo, hi] = inf().levels || [0, 255];
+  $("#lo").value = lo; $("#hi").value = hi;
+  levelsCanvas(cur, proc);
+  fit();
+  $("#note").value = inf().note || "";
+  renderList(); renderSide(); draw();
+}
+
+// ---------------------------------------------------------------- view
+function resize() {
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+  if (needFit) fit(); else draw();
+}
+let needFit = true;
+function fit() {
+  if (!cur) return;
+  const c = cache[cur], dpr = window.devicePixelRatio || 1;
+  const W = cv.width / dpr, H = cv.height / dpr;
+  needFit = !(W > 0 && H > 0);                       // canvas not laid out yet: fit again on the next resize
+  if (needFit) return;
+  view.s = Math.min(W / c.w, H / c.h) * 0.96;
+  view.x = (W - c.w * view.s) / 2; view.y = (H - c.h * view.s) / 2;
+  draw();
+}
+function toImg(e) {
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left - view.x) / view.s, (e.clientY - r.top - view.y) / view.s];
+}
+
+// ---------------------------------------------------------------- drawing
+function shapePath(g, sh) {
+  const p = sh.points;
+  g.beginPath();
+  if (sh.kind === "rect") g.rect(Math.min(p[0][0], p[1][0]), Math.min(p[0][1], p[1][1]), Math.abs(p[1][0] - p[0][0]), Math.abs(p[1][1] - p[0][1]));
+  else if (sh.kind === "circle") g.arc(p[0][0], p[0][1], Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]), 0, Math.PI * 2);
+  else if (sh.kind === "point") { /* drawn as a cross */ }
+  else { g.moveTo(p[0][0], p[0][1]); for (const q of p.slice(1)) g.lineTo(q[0], q[1]); if (sh.kind === "polygon" && !sh.open) g.closePath(); }
+}
+
+function drawShape(g, sh, i, unit, selected, withText) {
+  const c = color(sh.class);
+  g.lineWidth = (selected ? 3 : 2) * unit; g.strokeStyle = c; g.fillStyle = c + "22";
+  if (sh.kind === "point") {
+    const [x, y] = sh.points[0], r = 7 * unit;
+    g.beginPath(); g.moveTo(x - r, y); g.lineTo(x + r, y); g.moveTo(x, y - r); g.lineTo(x, y + r); g.stroke();
+  } else {
+    shapePath(g, sh);
+    if (sh.kind === "rect" || sh.kind === "circle" || (sh.kind === "polygon" && !sh.open)) g.fill();
+    g.stroke();
+  }
+  if (selected) {
+    g.fillStyle = "#fff";
+    for (const [x, y] of sh.points) g.fillRect(x - 3.5 * unit, y - 3.5 * unit, 7 * unit, 7 * unit);
+  }
+  if (i >= 0) {
+    const [x, y] = topLeft(sh);
+    let txt = `#${i + 1}${sh.class ? " " + sh.class : ""}`;
+    if (withText && sh.label) txt += ": " + (sh.label.length > 60 ? sh.label.slice(0, 57) + "…" : sh.label);
+    g.font = `${Math.round(12 * unit)}px Segoe UI, sans-serif`;
+    const w = g.measureText(txt).width + 8 * unit, h = 16 * unit;
+    const ty = y - h - 2 * unit < 0 ? y + 2 * unit : y - h - 2 * unit;
+    g.fillStyle = c; g.fillRect(x, ty, w, h);
+    g.fillStyle = "#000"; g.fillText(txt, x + 4 * unit, ty + 12 * unit);
+  }
+}
+function topLeft(sh) {
+  if (sh.kind === "circle") { const r = Math.hypot(sh.points[1][0] - sh.points[0][0], sh.points[1][1] - sh.points[0][1]); return [sh.points[0][0] - r, sh.points[0][1] - r]; }
+  return [Math.min(...sh.points.map(p => p[0])), Math.min(...sh.points.map(p => p[1]))];
+}
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (!cur) return;
+  ctx.setTransform(view.s * dpr, 0, 0, view.s * dpr, view.x * dpr, view.y * dpr);
+  ctx.imageSmoothingEnabled = view.s < 2;
+  ctx.drawImage(proc, 0, 0);
+  const unit = 1 / view.s;
+  list().forEach((sh, i) => drawShape(ctx, sh, i, unit, i === sel, false));
+  if (drawing) drawShape(ctx, drawing, -1, unit, false, false);
+  $("#zoom").textContent = `${Math.round(view.s * 100)}%`;
+}
+
+// ---------------------------------------------------------------- hit testing
+function distSeg(p, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy;
+  const t = L ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L)) : 0;
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+}
+function hit(p) {
+  const tol = 6 / view.s, L = list();
+  if (sel >= 0) {                                    // vertex of the selected shape first
+    const v = L[sel].points.findIndex(q => Math.hypot(q[0] - p[0], q[1] - p[1]) < tol);
+    if (v >= 0) return { i: sel, v };
+  }
+  for (let i = L.length - 1; i >= 0; i--) {
+    const sh = L[i], pt = sh.points;
+    if (sh.kind === "point" && Math.hypot(pt[0][0] - p[0], pt[0][1] - p[1]) < tol * 1.5) return { i };
+    if (sh.kind === "line" && distSeg(p, pt[0], pt[1]) < tol) return { i };
+    if (sh.kind === "rect" || sh.kind === "circle" || sh.kind === "polygon") {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);            // path in image coordinates, like p
+      shapePath(ctx, sh);
+      if (ctx.isPointInPath(p[0], p[1])) return { i };
+      for (let k = 0; k < pt.length; k++) if (distSeg(p, pt[k], pt[(k + 1) % pt.length]) < tol) return { i };
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------- mouse
+const round = p => [Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10];
+function clampPt(p) { const c = cache[cur]; return [Math.max(0, Math.min(c.w, p[0])), Math.max(0, Math.min(c.h, p[1]))]; }
+
+cv.addEventListener("contextmenu", e => e.preventDefault());
+cv.addEventListener("mousedown", e => {
+  if (!cur) return;
+  const p = clampPt(toImg(e));
+  if (e.button === 2 || e.button === 1 || spaceDown) { drag = { pan: true, sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y }; return; }
+  if (e.button !== 0) return;
+  if (tool === "select") {
+    const h = hit(p);
+    sel = h ? h.i : -1;
+    if (h) drag = { i: h.i, v: h.v, last: p };
+    renderSide(); draw(); return;
+  }
+  if (tool === "polygon") {
+    if (!drawing) drawing = { kind: "polygon", points: [p, p], open: true };
+    else drawing.points.splice(drawing.points.length - 1, 0, p);
+    draw(); return;
+  }
+  if (tool === "point") { addShape({ kind: "point", points: [round(p)] }); return; }
+  drawing = { kind: tool, points: [p, p] };
+  drag = { creating: true };
+});
+window.addEventListener("mousemove", e => {
+  if (!cur) return;
+  const p = toImg(e), c = cache[cur];
+  if (p[0] >= 0 && p[1] >= 0 && p[0] < c.w && p[1] < c.h) {
+    const k = (Math.floor(p[1]) * c.w + Math.floor(p[0])) * 4, d = c.data.data;
+    const v = d[k] === d[k + 1] && d[k] === d[k + 2] ? `${d[k]}` : `${d[k]},${d[k + 1]},${d[k + 2]}`;
+    $("#pos").textContent = `x ${p[0].toFixed(1)}  y ${p[1].toFixed(1)}  value ${v}`;
+  }
+  if (drawing && drawing.kind === "polygon") { drawing.points[drawing.points.length - 1] = clampPt(p); draw(); }
+  if (!drag) return;
+  if (drag.pan) { view.x = drag.vx + e.clientX - drag.sx; view.y = drag.vy + e.clientY - drag.sy; draw(); return; }
+  if (drag.creating) { drawing.points[1] = clampPt(p); draw(); return; }
+  const sh = list()[drag.i], q = clampPt(p);
+  if (drag.v !== undefined) sh.points[drag.v] = round(q);
+  else { const dx = q[0] - drag.last[0], dy = q[1] - drag.last[1]; sh.points = sh.points.map(r => round([r[0] + dx, r[1] + dy])); drag.last = q; }
+  drag.moved = true; draw();
+});
+window.addEventListener("mouseup", () => {
+  if (drag && drag.creating) {
+    const [a, b] = drawing.points;
+    if (Math.hypot(b[0] - a[0], b[1] - a[1]) * view.s > 3) addShape({ kind: drawing.kind, points: drawing.points.map(round) });
+    drawing = null; draw();
+  } else if (drag && drag.moved) { setDirty(); renderList(); }
+  drag = null;
+});
+cv.addEventListener("dblclick", () => finishPolygon());
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const f = Math.exp(-e.deltaY * 0.0015), s = Math.max(0.05, Math.min(40, view.s * f));
+  view.x = mx - (mx - view.x) * s / view.s; view.y = my - (my - view.y) * s / view.s; view.s = s;
+  draw();
+}, { passive: false });
+
+function finishPolygon() {
+  if (!drawing || drawing.kind !== "polygon") return;
+  const pts = drawing.points.slice(0, -1);
+  const uniq = pts.filter((q, i) => i === 0 || Math.hypot(q[0] - pts[i - 1][0], q[1] - pts[i - 1][1]) > 0.5);
+  drawing = null;
+  if (uniq.length >= 3) addShape({ kind: "polygon", points: uniq.map(round) }); else draw();
+}
+
+function addShape(sh) {
+  sh.class = lastClass; sh.label = "";
+  list().push(sh); sel = list().length - 1;
+  setDirty(); renderList(); renderSide(); draw();
+  $("#cls").focus(); $("#cls").select();
+}
+
+// ---------------------------------------------------------------- side panel
+function refreshClasses() {
+  const all = new Set(T.classes || []);
+  for (const L of Object.values(shapes)) for (const sh of L) if (sh.class) all.add(sh.class);
+  $("#classes").innerHTML = [...all].map(c => `<option value="${c.replace(/"/g, "&quot;")}">`).join("");
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+
+function renderList() {
+  $("#list").innerHTML = T.images.map(n => {
+    const v = (info[n] && info[n].verdict) || "", k = (shapes[n] || []).length;
+    return `<div data-img="${esc(n)}" class="${n === cur ? "cur" : ""}"><span class="badge b-${v}">${v || "?"}</span>${esc(n)}<span class="n">${k || ""}</span></div>`;
+  }).join("");
+}
+function renderSide() {
+  const v = inf().verdict || "";
+  document.querySelectorAll("[data-verdict]").forEach(b => b.classList.toggle("on", b.dataset.verdict === v && (v || false)));
+  renderShapeList();
+  const ed = $("#editor");
+  if (sel < 0 || !list()[sel]) { ed.style.display = "none"; return; }
+  const sh = list()[sel];
+  ed.style.display = "block";
+  $("#cls").value = sh.class || "";
+  $("#desc").value = sh.label || "";
+  $("#ref").value = sh.step ? "step:" + sh.step : sh.feature ? "feature:" + sh.feature : "";
+}
+function renderShapeList() {
+  $("#shapes").innerHTML = list().map((sh, i) =>
+    `<div data-i="${i}" class="${i === sel ? "sel" : ""}"><span class="sw" style="background:${color(sh.class)}"></span>` +
+    `<b>#${i + 1}</b> ${sh.kind} <span>${esc(sh.class || "")}</span><span class="d">${esc(sh.label || "")}</span></div>`
+  ).join("") || `<div class="hint" style="border:0;cursor:default">No shapes. Pick a tool and draw on the image.</div>`;
+}
+
+$("#list").addEventListener("click", e => { const d = e.target.closest("[data-img]"); if (d) open(d.dataset.img); });
+$("#shapes").addEventListener("click", e => { const d = e.target.closest("[data-i]"); if (d) { sel = +d.dataset.i; setTool("select"); renderSide(); draw(); } });
+document.querySelectorAll("[data-verdict]").forEach(b => b.addEventListener("click", () => setVerdict(b.dataset.verdict)));
+function setVerdict(v) { if (!cur) return; inf().verdict = v; setDirty(); renderList(); renderSide(); }
+$("#note").addEventListener("input", e => { inf().note = e.target.value; setDirty(); });
+$("#cls").addEventListener("input", e => { const sh = list()[sel]; if (!sh) return; sh.class = e.target.value.trim(); lastClass = sh.class; setDirty(); renderShapeList(); draw(); });
+$("#cls").addEventListener("change", refreshClasses);
+$("#desc").addEventListener("input", e => { const sh = list()[sel]; if (!sh) return; sh.label = e.target.value; setDirty(); renderShapeList(); });
+$("#ref").addEventListener("change", e => {
+  const sh = list()[sel]; if (!sh) return;
+  delete sh.step; delete sh.feature;
+  const [k, id] = e.target.value.split(/:(.*)/);
+  if (id) sh[k] = id;
+  setDirty();
+});
+$("#del").addEventListener("click", deleteSel);
+function deleteSel() { if (sel < 0) return; list().splice(sel, 1); sel = -1; setDirty(); renderList(); renderSide(); draw(); }
+
+// ---------------------------------------------------------------- toolbar
+function setTool(t) {
+  if (drawing && drawing.kind === "polygon" && t !== "polygon") drawing = null;
+  tool = t;
+  document.querySelectorAll("[data-tool]").forEach(b => b.classList.toggle("on", b.dataset.tool === t));
+  cv.style.cursor = t === "select" ? "default" : "crosshair";
+  draw();
+}
+document.querySelectorAll("[data-tool]").forEach(b => b.addEventListener("click", () => setTool(b.dataset.tool)));
+function onLevels() {
+  let lo = +$("#lo").value, hi = +$("#hi").value;
+  if (hi <= lo) { hi = lo + 1; $("#hi").value = hi; }
+  inf().levels = lo === 0 && hi === 255 ? undefined : [lo, hi];
+  if (!inf().levels) delete inf().levels;
+  levelsCanvas(cur, proc); setDirty(); draw();
+}
+$("#lo").addEventListener("input", onLevels);
+$("#hi").addEventListener("input", onLevels);
+$("#resetLv").addEventListener("click", () => { $("#lo").value = 0; $("#hi").value = 255; onLevels(); });
+$("#fit").addEventListener("click", fit);
+$("#prev").addEventListener("click", () => step(-1));
+$("#next").addEventListener("click", () => step(1));
+$("#save").addEventListener("click", saveAll);
+function step(d) { const i = T.images.indexOf(cur) + d; if (i >= 0 && i < T.images.length) open(T.images[i]); }
+
+window.addEventListener("keydown", e => {
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && document.activeElement.type !== "range";
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); saveAll(); return; }
+  if (e.key === "Escape") { if (typing) { document.activeElement.blur(); return; } drawing = null; sel = -1; renderSide(); draw(); return; }
+  if (typing) return;
+  if (e.key === " ") { spaceDown = true; cv.style.cursor = "grab"; e.preventDefault(); return; }
+  const k = e.key.toLowerCase();
+  const tools = { v: "select", r: "rect", p: "polygon", l: "line", c: "circle", t: "point" };
+  if (tools[k]) setTool(tools[k]);
+  else if (k === "o") setVerdict("OK");
+  else if (k === "n") setVerdict("NG");
+  else if (k === "f") fit();
+  else if (e.key === "Enter") finishPolygon();
+  else if (e.key === "Delete" || e.key === "Backspace") deleteSel();
+  else if (e.key === "ArrowLeft") step(-1);
+  else if (e.key === "ArrowRight") step(1);
+});
+window.addEventListener("keyup", e => { if (e.key === " ") { spaceDown = false; setTool(tool); } });
+window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+new ResizeObserver(resize).observe($("#stage"));
+
+// ---------------------------------------------------------------- save
+async function renderFor(name) {
+  await loadImage(name);
+  const c = cache[name], k = c.w < 1000 ? 2 : 1;                 // upscale small images so labels stay readable
+  const base = levelsCanvas(name, document.createElement("canvas"));
+  const i = info[name] || {}, head = 26;
+  const out = document.createElement("canvas");
+  out.width = c.w * k; out.height = c.h * k + head;
+  const g = out.getContext("2d");
+  g.fillStyle = "#111"; g.fillRect(0, 0, out.width, head);
+  g.font = "bold 15px Segoe UI, sans-serif";
+  const v = i.verdict || "?";
+  g.fillStyle = v === "OK" ? "#2fbf71" : v === "NG" ? "#ff4d4f" : "#aaa";
+  g.fillText(v, 8, 18);
+  g.font = "13px Segoe UI, sans-serif"; g.fillStyle = "#ddd";
+  const lv = i.levels ? `  [levels ${i.levels[0]}–${i.levels[1]}]` : "";
+  g.fillText(`${name}${lv}${i.note ? "  —  " + i.note : ""}`, 44, 18);
+  g.save(); g.translate(0, head); g.scale(k, k);
+  g.imageSmoothingEnabled = false;
+  g.drawImage(base, 0, 0);
+  (shapes[name] || []).forEach((sh, j) => drawShape(g, sh, j, 1 / k, false, true));
+  g.restore();
+  return out.toDataURL("image/png");
+}
+
+async function saveAll() {
+  status("Saving…");
+  const images = {}, renders = {};
+  for (const n of T.images) {
+    const L = (shapes[n] || []).map(sh => {
+      const o = { kind: sh.kind, points: sh.points.map(round) };
+      if (sh.class) o.class = sh.class;
+      o.label = sh.label || "";
+      if (sh.step) o.step = sh.step;
+      if (sh.feature) o.feature = sh.feature;
+      return o;
+    });
+    if (L.length) images[n] = L;
+    const i = info[n] || {};
+    if (L.length || i.verdict || i.note) {
+      try { renders[n] = await renderFor(n); } catch (e) { /* unreadable image: skip its render */ }
+    }
+  }
+  try {
+    const r = await fetch("/api/save", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ images, image_info: info, renders }) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.message);
+    setDirty(false); refreshClasses();
+    status(j.message, "good");
+  } catch (e) { status("Save failed: " + e.message, "err"); }
+}
+
+setTool("select");
+resize();
+init().catch(e => status("Cannot load the task: " + e.message, "err"));
+</script>
+</body>
+</html>

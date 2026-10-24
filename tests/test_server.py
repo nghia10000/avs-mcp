@@ -1,12 +1,16 @@
 """python -m unittest discover -s tests   (from the repo root)"""
 
+import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -164,6 +168,65 @@ column = "result"
 
     def test_missing_file(self):
         self.assertTrue(call("avs_evaluate", task_dir=self.dir)[1])
+
+
+class Annotate(unittest.TestCase):
+    PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==")
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.dir, "images"))
+        for n in ("a.png", "b.png"):
+            with open(os.path.join(self.dir, "images", n), "wb") as f:
+                f.write(self.PNG)
+        write(os.path.join(self.dir, "expected.csv"), "image,width\na.png,12\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def get(self, url):
+        with urllib.request.urlopen(url) as r:
+            return r.read()
+
+    def post(self, url, body):
+        req = urllib.request.Request(url + "api/save", json.dumps(body).encode(), {"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return json.loads(e.read())
+
+    def test_page_task_and_save(self):
+        text, err = call("avs_annotate", task_dir=self.dir, open_browser=False)
+        self.assertFalse(err, text)
+        url = re.search(r"http://\S+/", text).group(0)
+        self.assertIn(b"AVS Annotate", self.get(url))
+        state = json.loads(self.get(url + "api/task"))
+        self.assertEqual(state["images"], ["a.png", "b.png"])
+        self.assertEqual(state["verdict_col"], "result")
+        self.assertEqual(self.get(url + "img/a.png"), self.PNG)
+
+        r = self.post(url, {
+            "images": {"b.png": [{"kind": "rect", "points": [[0, 0], [1, 1]], "class": "scratch", "label": "long scratch"}]},
+            "image_info": {"a.png": {"verdict": "OK"}, "b.png": {"verdict": "NG", "note": "x", "levels": [0, 40]}},
+            "renders": {"b.png": "data:image/png;base64," + base64.b64encode(self.PNG).decode()}})
+        self.assertTrue(r["ok"], r)
+        with open(os.path.join(self.dir, "annotations.json"), encoding="utf-8") as f:
+            ann = json.load(f)
+        self.assertEqual(ann["images"]["b.png"][0]["class"], "scratch")
+        self.assertEqual(ann["image_info"]["b.png"]["levels"], [0, 40])
+        rows = {r["image"]: r for r in avs_mcp.task_spec.read_csv(os.path.join(self.dir, "expected.csv"))}
+        self.assertEqual((rows["a.png"]["width"], rows["a.png"]["result"], rows["b.png"]["result"]), ("12", "OK", "NG"))
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "annotated", "b.png")))
+
+        r = self.post(url, {"images": {"a.png": [{"kind": "blob", "points": []}]}})
+        self.assertFalse(r["ok"])
+        self.assertIn("unknown kind", r["message"])
+
+    def test_no_images(self):
+        shutil.rmtree(os.path.join(self.dir, "images"))
+        self.assertTrue(call("avs_annotate", task_dir=self.dir, open_browser=False)[1])
 
 
 @unittest.skipUnless(os.path.isdir(avs_mcp.FUNC_DIR), "Aurora Vision Library documentation not installed")

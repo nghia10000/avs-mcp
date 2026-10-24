@@ -230,7 +230,10 @@ def check_task(task_dir):
         except (json.JSONDecodeError, AttributeError) as e:
             errors.append(f"annotations.json is invalid: {e}")
     if n_ann == 0:
-        warnings.append("no annotations — drawing what to measure/inspect on 1-2 images removes most ambiguity")
+        warnings.append("no annotations — draw what to measure/inspect with avs_annotate; it removes most ambiguity")
+    rendered = os.path.join(task_dir, "annotated")
+    if os.path.isdir(rendered) and os.listdir(rendered):
+        warnings.append(f"look at {rendered}\\*.png — the images as the user marked them, with every description")
 
     # expected.csv
     key = spec.get("output", {}).get("key", "image")
