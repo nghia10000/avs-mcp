@@ -41,9 +41,12 @@
   #list .badge { font-size: 11px; padding: 0 5px; border-radius: 3px; min-width: 26px; text-align: center; }
   .b-OK { background: var(--ok); color: #fff; } .b-NG { background: var(--ng); color: #fff; } .b- { background: #333; color: var(--muted); }
   #list .n { margin-left: auto; color: var(--muted); font-size: 11px; }
-  #imgs .rm { visibility: hidden; padding: 0 6px; line-height: 18px; border-color: transparent; background: none; color: var(--muted); }
+  #list { overflow-x: hidden; }
+  #imgs .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #imgs .rm { flex: none; visibility: hidden; padding: 0 6px; line-height: 18px; border-color: transparent; background: none; color: var(--muted); }
   #imgs div:hover .rm, #imgs div.cur .rm { visibility: visible; }
   #imgs .rm:hover { color: var(--ng); border-color: var(--ng); }
+  #imgs .rm.arm { visibility: visible; background: var(--ng); border-color: var(--ng); color: #fff; }
   #stage { position: relative; overflow: hidden; background: #0e0f11; }
   #cv { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
   #side { overflow-y: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 10px; }
@@ -418,7 +421,8 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<":
 function renderList() {
   $("#imgs").innerHTML = T.images.map(n => {
     const v = (info[n] && info[n].verdict) || "", k = (shapes[n] || []).length;
-    return `<div data-img="${esc(n)}" class="${n === cur ? "cur" : ""}"><span class="badge b-${v}">${v || "?"}</span>${esc(n)}` +
+    return `<div data-img="${esc(n)}" class="${n === cur ? "cur" : ""}"><span class="badge b-${v}">${v || "?"}</span>` +
+      `<span class="nm" title="${esc(n)}">${esc(n)}</span>` +
       `<span class="n">${k || ""}</span><button class="rm" data-rm="${esc(n)}" title="Remove from the task (moved to .removed/)">✕</button></div>`;
   }).join("");
 }
@@ -443,15 +447,32 @@ function renderShapeList() {
 
 $("#imgs").addEventListener("click", e => {
   const rm = e.target.closest("[data-rm]");
-  if (rm) { e.stopPropagation(); removeImage(rm.dataset.rm); return; }
+  if (rm) { e.stopPropagation(); armRemove(rm); return; }
   const d = e.target.closest("[data-img]"); if (d) open(d.dataset.img);
 });
 
-async function removeImage(name) {
+// Two clicks instead of confirm(): embedded and some locked-down browsers suppress dialogs, and confirm() then
+// returns false at once, so the button looked dead.
+let armed = null;
+function armRemove(btn) {
+  const name = btn.dataset.rm;
+  if (armed && armed.name === name) { clearTimeout(armed.timer); armed = null; removeImage(name); return; }
+  if (armed) disarm();
   const marks = (shapes[name] || []).length, v = (info[name] || {}).verdict;
-  const what = [v && `verdict ${v}`, marks && `${marks} shape(s)`].filter(Boolean).join(" and ");
-  if (!confirm(`Remove ${name} from the task?\n\nThe file is moved to .removed/ in the task folder (not deleted).` +
-               (what ? `\nDropped with it: ${what}.` : ""))) return;
+  const what = [v && `verdict ${v}`, marks && `${marks} shape(s)`].filter(Boolean).join(", ");
+  btn.classList.add("arm"); btn.textContent = "Remove?";
+  armed = { name, btn, timer: setTimeout(disarm, 4000) };
+  status(`Click "Remove?" again to take ${name} out of the task (moved to .removed/, not deleted` +
+         (what ? `; drops ${what}` : "") + ").");
+}
+function disarm() {
+  if (!armed) return;
+  clearTimeout(armed.timer);
+  armed.btn.classList.remove("arm"); armed.btn.textContent = "✕";
+  armed = null;
+}
+
+async function removeImage(name) {
   const j = await api("/api/remove?name=" + encodeURIComponent(name), { method: "POST" });
   if (!j.ok) { status("Remove failed: " + j.message, "err"); return; }
   const i = T.images.indexOf(name);
