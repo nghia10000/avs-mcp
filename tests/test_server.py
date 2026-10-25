@@ -169,6 +169,52 @@ column = "result"
     def test_missing_file(self):
         self.assertTrue(call("avs_evaluate", task_dir=self.dir)[1])
 
+    def test_no_holdout_warning(self):
+        write(os.path.join(self.dir, "results.csv"), "image,d,result\na,10.1,OK\nb,19.8,NG\nc,30.4,OK\n")
+        self.assertIn("No holdout images", call("avs_evaluate", task_dir=self.dir)[0])
+
+
+class Margins(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        write(os.path.join(self.dir, "expected.csv"),
+              "image,result\n" + "".join(f"ok{i}.png,OK\n" for i in range(4)) + "ng0.png,NG\nng1.png,NG\nng2.png,NG\n")
+        # gap: OK 1..2, ng0 just above, ng1 far above, ng2 inside the OK range
+        write(os.path.join(self.dir, "results.csv"),
+              "image,result,gap,area\nok0,OK,1.0,50\nok1,OK,1.5,52\nok2,OK,2.0,51\nok3,OK,1.2,49\n"
+              "ng0,NG,2.3,50\nng1,NG,9.0,50\nng2,NG,1.4,51\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def test_margin_report(self):
+        text, err = call("avs_evaluate", task_dir=self.dir)
+        self.assertFalse(err, text)
+        self.assertIn("gap: OK 1..2, NG 1.4..9", text)
+        lines = text.splitlines()
+        ng0 = next(l for l in lines if l.strip().startswith("ng0.png"))
+        self.assertIn("CLOSE", ng0)
+        self.assertNotIn("CLOSE", next(l for l in lines if l.strip().startswith("ng1.png")))
+        self.assertIn("not separated by any measured value): ng2.png", text)
+        self.assertIn("Only 4 OK image(s)", text)
+
+    def test_split_then_holdout_section(self):
+        text, err = call("avs_split", task_dir=self.dir, fraction=0.5, seed=1)
+        self.assertFalse(err, text)
+        rows = avs_mcp.task_spec.read_csv(os.path.join(self.dir, "expected.csv"))
+        hold = [r for r in rows if r["split"] == "holdout"]
+        self.assertEqual(sum(r["result"] == "OK" for r in hold), 2)       # OK/NG ratio kept
+        self.assertEqual(sum(r["result"] == "NG" for r in hold), 2)
+        self.assertEqual(call("avs_split", task_dir=self.dir, fraction=0.5, seed=1)[0], text)   # repeatable
+        text, _ = call("avs_evaluate", task_dir=self.dir)
+        self.assertIn("=== TUNE images (3)", text)
+        self.assertIn("=== HOLDOUT images (4)", text)
+        self.assertNotIn("No holdout images", text)
+
+    def test_split_needs_expected(self):
+        os.remove(os.path.join(self.dir, "expected.csv"))
+        self.assertTrue(call("avs_split", task_dir=self.dir)[1])
+
 
 class Annotate(unittest.TestCase):
     PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==")

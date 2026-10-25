@@ -255,6 +255,12 @@ def check_task(task_dir):
             unknown = [r[key] for r in rows if images and r.get(key) not in images]
             if unknown:
                 errors.append(f"{exp_file}: {len(unknown)} row(s) name images not in the folder, e.g. {unknown[0]}")
+            if "split" in head:                       # tune / holdout, see avs_split
+                bad = [r[key] for r in rows if (r.get("split") or "").strip().lower() not in ("tune", "holdout")]
+                if bad:
+                    errors.append(f"{exp_file}: 'split' must be tune or holdout, e.g. {bad[0]}")
+            elif n_exp >= 10:
+                warnings.append("no holdout images — run avs_split so accuracy on unseen images is measured")
     else:
         warnings.append("no ground truth ([expected] file) — results can only be checked by eye")
 

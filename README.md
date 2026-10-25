@@ -46,7 +46,8 @@ Install paths are detected under `C:\Program Files\Aurora Vision`; override with
 | `avs_task_new` | Create a task folder skeleton |
 | `avs_task_check` | Report missing / TODO information in a task spec |
 | `avs_annotate` | Local web page to mark each image OK / NG and draw defects or measurements on it (see below) |
-| `avs_evaluate` | Compare the program's `results.csv` with `expected.csv` |
+| `avs_evaluate` | Compare the program's `results.csv` with `expected.csv`; margin report; tune vs holdout |
+| `avs_split` | Mark part of the images as holdout (kept out of tuning) |
 
 Prompt: **`describe_task`** — the assistant interviews you and writes the task spec.
 
@@ -88,6 +89,15 @@ Only what must be machine-checked is structured (coordinates, tolerances, ground
 3. `avs_run` with `task_dir` → runs the program over the images and evaluates: error vs tolerance, escapes / false rejects.
 4. The assistant fixes the program and repeats until it passes. (No Runtime? Press Run in Studio via `avs_open`, then `avs_evaluate`.)
 
+### What the evaluation is compared against
+
+There is no reference program for a real job. Ground truth is what **people** say: OK/NG judged by QC, caliper / CMM values, defects marked in `avs_annotate`. Passing on the sample images is not enough, so `avs_evaluate` also reports:
+
+- **Margins.** Every numeric column the program writes to `results.csv` that is not in `expected.csv` (gap brightness, area, distance…) is treated as a measured feature. For each one: the range of the OK images, the range of the NG images, and for every NG image how far it is outside the OK range, in units of the OK spread. NG images close to the OK range are flagged `CLOSE`; NG images that no feature separates are listed. Few OK images → warning that the real OK range is wider.
+- **Holdout.** `avs_split` adds a `split` column to `expected.csv` (`tune` / `holdout`, OK/NG ratio kept, repeatable with a seed). Develop and set thresholds on the tune images only; the holdout section is the estimate for new images.
+
+Example (bottle-cap task, 9 images): all 9 correct, but the report shows the faint seal gap of one NG image only 0.68 above the highest OK value, about one OK spread — a threshold that passes here is unlikely to hold on new images without more samples.
+
 Notes on `avs_run`: the `.avexe` is built next to the project because relative paths in the program resolve from its location; the Runtime returns exit code 0 even when the program fails, so success is read from its log.
 
 ## Example
@@ -124,4 +134,5 @@ MCP server giúp trợ lý AI viết và kiểm tra chương trình **Aurora Vis
 - Mô tả bài toán: gọi prompt `describe_task`, trợ lý sẽ hỏi từng ý (đo gì, chi tiết trông thế nào, ảnh thay đổi ra sao, dung sai, đáp án mẫu…) rồi tạo thư mục task.
 - Bài toán phức tạp = chuỗi bước, mỗi bước một loại (`measure`, `defect`, …) và ghi rõ `rule` / `deep`.
 - Đánh dấu ảnh: `avs_annotate` mở trang web cục bộ — chọn OK/NG cho từng ảnh, khoanh lỗi (hộp, đa giác, đường, tròn, điểm) kèm loại lỗi và mô tả, kéo mức Black/White để thấy lỗi mờ. Lưu ra `annotations.json`, `expected.csv` và `annotated/*.png` để trợ lý xem đúng chỗ bạn khoanh.
+- Chấm điểm: đáp án là của người (QC đánh OK/NG, số đo thước cặp/CMM, lỗi khoanh bằng `avs_annotate`). `avs_evaluate` ngoài đúng/sai còn báo **khoảng cách an toàn** (ảnh NG cách khoảng giá trị của ảnh OK bao xa, ảnh nào sát ngưỡng) và chấm riêng **ảnh để dành** (`avs_split` chia ảnh dùng để chỉnh / ảnh để kiểm tra).
 - Chưa có: hỗ trợ Deep Learning — xem roadmap.

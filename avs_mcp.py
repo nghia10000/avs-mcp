@@ -11,7 +11,8 @@ Python standard library only (3.11+). Tools:
   avs_task_new        create a task folder (task.toml, annotations.json, images/)
   avs_task_check      check a task spec for missing information
   avs_annotate        local web page to draw defects / mark OK-NG on the task images
-  avs_evaluate        compare results.csv written by the program with expected.csv
+  avs_evaluate        compare results.csv written by the program with expected.csv (+ margins, holdout)
+  avs_split           mark part of the images as holdout (not for tuning)
 Prompt:
   describe_task       interview the user and write the task spec
 
@@ -31,7 +32,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import task_spec  # noqa: E402
 from annotate import annotate_tool  # noqa: E402
-from evaluate import evaluate  # noqa: E402
+from evaluate import evaluate, split  # noqa: E402
 
 VERSION = "0.3.0"
 AV_ROOT = r"C:\Program Files\Aurora Vision"
@@ -324,8 +325,13 @@ Task folder: {task_dir}
    {{"images": {{"<file>": [{{"kind": "line|point|rect|circle|polygon", "points": [[x, y], ...], "class": "", "label": "", "step": "<step id>"}}]}},
     "image_info": {{"<file>": {{"verdict": "OK|NG", "note": "", "levels": [black, white]}}}}}}
 5. Fill task.toml (replace every TODO), then call avs_task_check and fix everything it reports.
+   With enough images (>= ~10), call avs_split so part of them is held out; never tune on holdout images.
 6. Build the program so it appends one row per image to output.results_csv (SaveText, CreateOrAppend), using the key column and the step columns; look up filters with avs_search_filters / avs_filter_doc and real .avcode syntax with avs_search_examples; check it with avs_validate.
+   Also write the measured values the decision is based on (gap brightness, areas, distances...) as extra numeric columns:
+   avs_evaluate then reports how far each NG image is from the OK range.
 7. Run it with avs_run (project + task_dir): it executes headlessly and evaluates the results. Fix the program and repeat until avs_evaluate passes; if the Runtime is not installed, ask the user to press Run (avs_open) and then call avs_evaluate.
+8. Passing is not enough: report the margins to the user. NG images close to the OK range, or NG images no measured value
+   separates, need more samples or the user's judgement — ask instead of moving a threshold to fit them.
 """
 
 PROMPTS = [
@@ -380,9 +386,16 @@ TOOLS = [
                     "the verdict column of expected.csv and annotated/*.png — read those PNGs to see exactly what the user marked.",
      "inputSchema": obj({"task_dir": S, "open_browser": {"type": "boolean", "default": True}}, ["task_dir"])},
     {"name": "avs_evaluate",
-     "description": "Compare the program's results.csv with expected.csv of a task: numeric error vs tolerance, OK/NG escapes and false rejects.",
+     "description": "Compare the program's results.csv with expected.csv of a task: numeric error vs tolerance, OK/NG escapes and "
+                    "false rejects, reported separately for tune and holdout images. Numeric result columns not in expected.csv "
+                    "(measured features) get a margin report: OK range, NG range, NG images closest to the OK range.",
      "inputSchema": obj({"task_dir": S, "results": S, "expected": S, "key": S,
                          "tolerances": {"type": "object", "additionalProperties": {"type": "number"}}}, ["task_dir"])},
+    {"name": "avs_split",
+     "description": "Mark about `fraction` of a task's images as holdout in expected.csv (column 'split', OK/NG ratio kept). "
+                    "Tune the program on the other images only; avs_evaluate reports holdout accuracy separately.",
+     "inputSchema": obj({"task_dir": S, "fraction": {"type": "number", "default": 0.3},
+                         "seed": {"type": "integer", "default": 0}}, ["task_dir"])},
 ]
 
 
@@ -409,6 +422,8 @@ def call_tool(name, a):
         return annotate_tool(a.get("task_dir", ""), bool(a.get("open_browser", True)))
     if name == "avs_evaluate":
         return evaluate(a.get("task_dir", ""), a.get("results"), a.get("expected"), a.get("key"), a.get("tolerances"))
+    if name == "avs_split":
+        return split(a.get("task_dir", ""), float(a.get("fraction", 0.3)), int(a.get("seed", 0)))
     return f"Unknown tool: {name}", True
 
 
