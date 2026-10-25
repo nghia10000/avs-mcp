@@ -154,6 +154,17 @@ let proc = document.createElement("canvas");   // current image with levels appl
 let view = { s: 1, x: 0, y: 0 };
 let tool = "select", drawing = null, sel = -1, drag = null, dirty = false, spaceDown = false, lastClass = "";
 
+async function api(url, opts) {
+  // A server older than this page answers new endpoints with a plain 404: say so instead of failing silently.
+  const r = await fetch(url, opts);
+  const text = await r.text();
+  try { return JSON.parse(text); }
+  catch (e) {
+    return { ok: false, message: r.status === 404
+      ? "this server does not support that yet (it runs older code than the page) - restart it (or the avs MCP server)"
+      : `HTTP ${r.status}: ${text.slice(0, 120)}` };
+  }
+}
 function status(msg, cls = "") { const s = $("#status"); s.textContent = msg; s.title = msg; s.className = cls; }
 function color(c) { let h = 0; for (const ch of c || "") h = (h * 31 + ch.charCodeAt(0)) >>> 0; return c ? PALETTE[h % PALETTE.length] : "#ffd400"; }
 function setDirty(v = true) { dirty = v; $("#save").textContent = v ? "Save *" : "Save"; }
@@ -441,7 +452,7 @@ async function removeImage(name) {
   const what = [v && `verdict ${v}`, marks && `${marks} shape(s)`].filter(Boolean).join(" and ");
   if (!confirm(`Remove ${name} from the task?\n\nThe file is moved to .removed/ in the task folder (not deleted).` +
                (what ? `\nDropped with it: ${what}.` : ""))) return;
-  const j = await (await fetch("/api/remove?name=" + encodeURIComponent(name), { method: "POST" })).json();
+  const j = await api("/api/remove?name=" + encodeURIComponent(name), { method: "POST" });
   if (!j.ok) { status("Remove failed: " + j.message, "err"); return; }
   const i = T.images.indexOf(name);
   delete shapes[name]; delete info[name]; delete cache[name];
@@ -466,7 +477,7 @@ async function upload(files) {
   for (const [i, f] of imgs.entries()) {
     status(`Adding ${i + 1}/${imgs.length}: ${f.name}`);
     try {
-      const j = await (await fetch("/api/upload?name=" + encodeURIComponent(f.name), { method: "POST", body: f })).json();
+      const j = await api("/api/upload?name=" + encodeURIComponent(f.name), { method: "POST", body: f });
       if (!j.ok) failed.push(`${f.name} (${j.message})`);
       else if (j.message.startsWith("already")) same++;
       else { added++; if (j.name !== f.name) renamed.push(`${f.name} -> ${j.name}`); }
@@ -598,9 +609,8 @@ async function saveAll() {
     }
   }
   try {
-    const r = await fetch("/api/save", { method: "POST", headers: { "Content-Type": "application/json" },
+    const j = await api("/api/save", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ images, image_info: info, renders }) });
-    const j = await r.json();
     if (!j.ok) throw new Error(j.message);
     setDirty(false); refreshClasses();
     status(j.message, "good");
