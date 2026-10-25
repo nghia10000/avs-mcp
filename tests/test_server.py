@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -270,9 +271,28 @@ class Annotate(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertIn("unknown kind", r["message"])
 
-    def test_no_images(self):
-        shutil.rmtree(os.path.join(self.dir, "images"))
-        self.assertTrue(call("avs_annotate", task_dir=self.dir, open_browser=False)[1])
+    def test_upload(self):
+        shutil.rmtree(os.path.join(self.dir, "images"))              # page opens on an empty task
+        text, err = call("avs_annotate", task_dir=self.dir, open_browser=False)
+        self.assertFalse(err, text)
+        url = re.search(r"http://\S+/", text).group(0)
+
+        def up(name, data):
+            req = urllib.request.Request(url + "api/upload?name=" + urllib.parse.quote(name), data, method="POST")
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                with e:
+                    return json.loads(e.read())
+
+        self.assertEqual(up("cam 1.png", self.PNG)["message"], "added")
+        self.assertEqual(up("cam 1.png", self.PNG)["message"], "already in the task")
+        r = up("cam 1.png", self.PNG + b"x")                           # same name, other content
+        self.assertEqual(r["name"], "cam 1_1.png")
+        self.assertFalse(up("..\\evil.txt", b"x")["ok"])
+        self.assertEqual(up("..\\..\\up.bmp", b"BM")["name"], "up.bmp")   # folders in the name are dropped
+        self.assertEqual(json.loads(self.get(url + "api/task"))["images"], ["cam 1.png", "cam 1_1.png", "up.bmp"])
 
 
 @unittest.skipUnless(os.path.isdir(avs_mcp.FUNC_DIR), "Aurora Vision Library documentation not installed")

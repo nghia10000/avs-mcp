@@ -146,6 +146,25 @@ def save(task_dir, body):
             f"{len(renders)} image(s) in annotated/.")
 
 
+def add_image(task_dir, name, data):
+    """Copy an uploaded image into the task's image folder; a different file with the same name gets a suffix."""
+    name = os.path.basename(name.replace("\\", "/")).strip()
+    stem_, ext = os.path.splitext(name)
+    if not stem_ or ext.lower() not in task_spec.IMAGE_EXT:
+        raise ValueError(f"{name!r}: not an image ({', '.join(task_spec.IMAGE_EXT)})")
+    img_dir = task_paths(task_dir)["img_dir"]
+    os.makedirs(img_dir, exist_ok=True)
+    target, i = name, 1
+    while os.path.exists(os.path.join(img_dir, target)):
+        with open(os.path.join(img_dir, target), "rb") as f:
+            if f.read() == data:
+                return target, "already in the task"
+        target, i = f"{stem_}_{i}{ext}", i + 1
+    with open(os.path.join(img_dir, target), "wb") as f:
+        f.write(data)
+    return target, "added" if target == name else f"added as {target} (name taken)"
+
+
 def make_handler(task_dir):
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):                 # stdout belongs to the MCP protocol
@@ -179,11 +198,16 @@ def make_handler(task_dir):
             self.send(404, b"not found", "text/plain")
 
         def do_POST(self):
-            if self.path != "/api/save":
-                return self.send(404, b"not found", "text/plain")
+            from urllib.parse import parse_qs, urlsplit
+            url = urlsplit(self.path)
             try:
-                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8"))
-                self.send_json(200, {"ok": True, "message": save(task_dir, body)})
+                data = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                if url.path == "/api/save":
+                    return self.send_json(200, {"ok": True, "message": save(task_dir, json.loads(data.decode("utf-8")))})
+                if url.path == "/api/upload":               # raw image bytes, ?name=<file name>
+                    name, status = add_image(task_dir, parse_qs(url.query).get("name", [""])[0], data)
+                    return self.send_json(200, {"ok": True, "name": name, "message": status})
+                self.send(404, b"not found", "text/plain")
             except Exception as e:
                 self.send_json(400, {"ok": False, "message": f"{type(e).__name__}: {e}"})
 
@@ -207,10 +231,9 @@ def serve(task_dir, port=0, open_browser=True):
 
 def annotate_tool(task_dir, open_browser=True):
     p = task_paths(task_dir)
-    if not p["images"]:
-        return f"No images in {p['img_dir']}. Put the sample images there first.", True
     url = serve(task_dir, open_browser=open_browser)
     return (f"Annotation page for {len(p['images'])} image(s): {url}\n"
+            f"Images can be added on the page (+ Files / + Folder / drag and drop); they are copied into {p['img_dir']}.\n"
             f"Ask the user to mark each image OK/NG, draw every defect (rect/polygon/line/point/circle) with a class and a "
             f"description, then press Save. Verdicts go to {p['exp_file']} (column '{p['verdict_col']}'), shapes to "
             f"annotations.json, rendered images to annotated/ — open those PNGs to see exactly what was marked."), False

@@ -12,8 +12,9 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
     font: 13px/1.4 "Segoe UI", system-ui, sans-serif; }
-  body { display: grid; grid-template-columns: 200px 1fr 300px; grid-template-rows: 44px 1fr 26px; height: 100vh; }
-  header { grid-column: 1 / 4; display: flex; align-items: center; gap: 6px; padding: 0 10px;
+  body { display: grid; grid-template-columns: 200px minmax(0, 1fr) 300px; overflow: hidden; grid-template-rows: 44px 1fr 26px; height: 100vh; }
+  html { overflow: hidden; }
+  header { grid-column: 1 / 4; display: flex; align-items: center; gap: 6px; padding: 0 10px; min-width: 0; overflow-x: auto;
     background: var(--panel); border-bottom: 1px solid var(--line); }
   header h1 { font-size: 14px; margin: 0 12px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
   button { background: #2a2e35; color: var(--text); border: 1px solid var(--line); border-radius: 5px;
@@ -29,8 +30,14 @@
   label.lv { display: flex; align-items: center; gap: 4px; color: var(--muted); }
   label.lv input { width: 90px; }
   #list { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); }
-  #list div { padding: 6px 10px; cursor: pointer; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid #23272c; }
-  #list div.cur { background: #2b3340; }
+  #addbar { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+  #addbar button { flex: 1; }
+  #imgs:empty::after { content: "No images yet. Add files or a folder, or drop images here."; display: block; padding: 10px; color: var(--muted); }
+  #drop { display: none; position: fixed; inset: 0; z-index: 10; background: rgba(76,154,255,.18); border: 3px dashed var(--accent);
+    align-items: center; justify-content: center; font-size: 20px; color: #fff; pointer-events: none; }
+  body.dragging #drop { display: flex; }
+  #imgs div { padding: 6px 10px; cursor: pointer; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid #23272c; }
+  #imgs div.cur { background: #2b3340; }
   #list .badge { font-size: 11px; padding: 0 5px; border-radius: 3px; min-width: 26px; text-align: center; }
   .b-OK { background: var(--ok); color: #fff; } .b-NG { background: var(--ng); color: #fff; } .b- { background: #333; color: var(--muted); }
   #list .n { margin-left: auto; color: var(--muted); font-size: 11px; }
@@ -51,8 +58,10 @@
   #shapes .d { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #editor { border: 1px solid var(--accent); border-radius: 6px; padding: 8px; margin-top: 8px; display: none; }
   #editor label { display: block; color: var(--muted); margin: 6px 0 2px; }
-  footer { grid-column: 1 / 4; display: flex; gap: 16px; align-items: center; padding: 0 10px;
+  @media (max-width: 1100px) { header h1 { display: none; } label.lv input { width: 64px; } }
+  footer { grid-column: 1 / 4; min-width: 0; display: flex; gap: 16px; align-items: center; padding: 0 10px;
     background: var(--panel); border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  #status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #status.err { color: var(--ng); } #status.good { color: var(--ok); }
   .hint { color: var(--muted); font-size: 12px; }
   kbd { background: #2a2e35; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; font-size: 11px; }
@@ -78,7 +87,16 @@
   <button id="save" class="primary" title="Save (Ctrl+S)">Save</button>
 </header>
 
-<nav id="list"></nav>
+<nav id="list">
+  <div id="addbar">
+    <button id="addFiles" title="Copy image files into the task's image folder">+ Files</button>
+    <button id="addFolder" title="Copy every image of a folder into the task's image folder">+ Folder</button>
+    <input id="fileIn" type="file" multiple accept=".png,.bmp,.jpg,.jpeg,.tif,.tiff" hidden>
+    <input id="dirIn" type="file" webkitdirectory multiple hidden>
+  </div>
+  <div id="imgs"></div>
+</nav>
+<div id="drop">Drop images to add them to the task</div>
 
 <main id="stage"><canvas id="cv"></canvas></main>
 
@@ -133,7 +151,7 @@ let proc = document.createElement("canvas");   // current image with levels appl
 let view = { s: 1, x: 0, y: 0 };
 let tool = "select", drawing = null, sel = -1, drag = null, dirty = false, spaceDown = false, lastClass = "";
 
-function status(msg, cls = "") { const s = $("#status"); s.textContent = msg; s.className = cls; }
+function status(msg, cls = "") { const s = $("#status"); s.textContent = msg; s.title = msg; s.className = cls; }
 function color(c) { let h = 0; for (const ch of c || "") h = (h * 31 + ch.charCodeAt(0)) >>> 0; return c ? PALETTE[h % PALETTE.length] : "#ffd400"; }
 function setDirty(v = true) { dirty = v; $("#save").textContent = v ? "Save *" : "Save"; }
 const list = () => (shapes[cur] = shapes[cur] || []);
@@ -384,7 +402,7 @@ function refreshClasses() {
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
 
 function renderList() {
-  $("#list").innerHTML = T.images.map(n => {
+  $("#imgs").innerHTML = T.images.map(n => {
     const v = (info[n] && info[n].verdict) || "", k = (shapes[n] || []).length;
     return `<div data-img="${esc(n)}" class="${n === cur ? "cur" : ""}"><span class="badge b-${v}">${v || "?"}</span>${esc(n)}<span class="n">${k || ""}</span></div>`;
   }).join("");
@@ -408,7 +426,43 @@ function renderShapeList() {
   ).join("") || `<div class="hint" style="border:0;cursor:default">No shapes. Pick a tool and draw on the image.</div>`;
 }
 
-$("#list").addEventListener("click", e => { const d = e.target.closest("[data-img]"); if (d) open(d.dataset.img); });
+$("#imgs").addEventListener("click", e => { const d = e.target.closest("[data-img]"); if (d) open(d.dataset.img); });
+
+// ---------------------------------------------------------------- adding images
+const IMG_RE = /\.(png|bmp|jpe?g|tiff?)$/i;
+async function upload(files) {
+  const imgs = [...files].filter(f => IMG_RE.test(f.name));
+  if (!imgs.length) { status("No image files (png, bmp, jpg, tif) in the selection.", "err"); return; }
+  let added = 0, same = 0, renamed = [];
+  const failed = [];
+  for (const [i, f] of imgs.entries()) {
+    status(`Adding ${i + 1}/${imgs.length}: ${f.name}`);
+    try {
+      const j = await (await fetch("/api/upload?name=" + encodeURIComponent(f.name), { method: "POST", body: f })).json();
+      if (!j.ok) failed.push(`${f.name} (${j.message})`);
+      else if (j.message.startsWith("already")) same++;
+      else { added++; if (j.name !== f.name) renamed.push(`${f.name} -> ${j.name}`); }
+    } catch (e) { failed.push(`${f.name} (${e.message})`); }
+  }
+  T.images = (await (await fetch("/api/task")).json()).images;
+  renderList();
+  if (!cur && T.images.length) await open(T.images[0]);
+  let msg = `${added} image(s) added, ${same} already in the task`;
+  if (renamed.length) msg += `; renamed: ${renamed.join(", ")}`;
+  if (failed.length) msg += `; failed: ${failed.join(", ")}`;
+  status(msg, failed.length ? "err" : "good");
+}
+$("#addFiles").addEventListener("click", () => $("#fileIn").click());
+$("#addFolder").addEventListener("click", () => $("#dirIn").click());
+for (const id of ["#fileIn", "#dirIn"]) $(id).addEventListener("change", e => { upload(e.target.files); e.target.value = ""; });
+let dragDepth = 0;
+window.addEventListener("dragenter", e => { if (e.dataTransfer.types.includes("Files")) { dragDepth++; document.body.classList.add("dragging"); } });
+window.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dragging"); } });
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => {
+  e.preventDefault(); dragDepth = 0; document.body.classList.remove("dragging");
+  if (e.dataTransfer.files.length) upload(e.dataTransfer.files);
+});
 $("#shapes").addEventListener("click", e => { const d = e.target.closest("[data-i]"); if (d) { sel = +d.dataset.i; setTool("select"); renderSide(); draw(); } });
 document.querySelectorAll("[data-verdict]").forEach(b => b.addEventListener("click", () => setVerdict(b.dataset.verdict)));
 function setVerdict(v) { if (!cur) return; inf().verdict = v; setDirty(); renderList(); renderSide(); }
