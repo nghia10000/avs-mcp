@@ -4,6 +4,7 @@ Writes into the task folder:
   annotations.json  shapes per image ("images") + verdict, note and display levels per image ("image_info")
   expected.csv      key column + verdict column (OK / NG), other columns kept
   annotated/        each marked image rendered with its shapes, so the assistant can look at what was drawn
+  images/, .removed/ images added from the page are copied into images/; removed ones are moved to .removed/
 
 Standalone: python annotate.py <task_dir> [--port N] [--no-browser]
 """
@@ -165,6 +166,39 @@ def add_image(task_dir, name, data):
     return target, "added" if target == name else f"added as {target} (name taken)"
 
 
+def remove_image(task_dir, name):
+    """Take an image out of the task: the file moves to .removed/ (not deleted); its marks, verdict and render go."""
+    p = task_paths(task_dir)
+    if name not in p["images"]:
+        raise ValueError(f"{name!r} is not an image of this task")
+    trash = os.path.join(task_dir, ".removed")
+    os.makedirs(trash, exist_ok=True)
+    stem_, ext = os.path.splitext(name)
+    target, i = name, 1
+    while os.path.exists(os.path.join(trash, target)):
+        target, i = f"{stem_}_{i}{ext}", i + 1
+    os.replace(os.path.join(p["img_dir"], name), os.path.join(trash, target))
+
+    ann = load_annotations(task_dir)
+    if name in ann.get("images", {}) or name in ann.get("image_info", {}):
+        ann.get("images", {}).pop(name, None)
+        ann.get("image_info", {}).pop(name, None)
+        with open(os.path.join(task_dir, "annotations.json"), "w", encoding="utf-8") as f:
+            json.dump(ann, f, indent=2, ensure_ascii=False)
+    exp_path = os.path.join(task_dir, p["exp_file"])
+    fields, rows = read_expected(exp_path, p["key"])
+    if name in rows:
+        del rows[name]
+        with open(exp_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(rows.values())
+    render = os.path.join(task_dir, "annotated", stem_ + ".png")
+    if os.path.exists(render):
+        os.remove(render)
+    return f"{name} moved to .removed/{target}"
+
+
 def make_handler(task_dir):
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):                 # stdout belongs to the MCP protocol
@@ -207,6 +241,8 @@ def make_handler(task_dir):
                 if url.path == "/api/upload":               # raw image bytes, ?name=<file name>
                     name, status = add_image(task_dir, parse_qs(url.query).get("name", [""])[0], data)
                     return self.send_json(200, {"ok": True, "name": name, "message": status})
+                if url.path == "/api/remove":               # ?name=<image>
+                    return self.send_json(200, {"ok": True, "message": remove_image(task_dir, parse_qs(url.query).get("name", [""])[0])})
                 self.send(404, b"not found", "text/plain")
             except Exception as e:
                 self.send_json(400, {"ok": False, "message": f"{type(e).__name__}: {e}"})

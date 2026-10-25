@@ -41,6 +41,9 @@
   #list .badge { font-size: 11px; padding: 0 5px; border-radius: 3px; min-width: 26px; text-align: center; }
   .b-OK { background: var(--ok); color: #fff; } .b-NG { background: var(--ng); color: #fff; } .b- { background: #333; color: var(--muted); }
   #list .n { margin-left: auto; color: var(--muted); font-size: 11px; }
+  #imgs .rm { visibility: hidden; padding: 0 6px; line-height: 18px; border-color: transparent; background: none; color: var(--muted); }
+  #imgs div:hover .rm, #imgs div.cur .rm { visibility: visible; }
+  #imgs .rm:hover { color: var(--ng); border-color: var(--ng); }
   #stage { position: relative; overflow: hidden; background: #0e0f11; }
   #cv { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
   #side { overflow-y: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 10px; }
@@ -404,7 +407,8 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<":
 function renderList() {
   $("#imgs").innerHTML = T.images.map(n => {
     const v = (info[n] && info[n].verdict) || "", k = (shapes[n] || []).length;
-    return `<div data-img="${esc(n)}" class="${n === cur ? "cur" : ""}"><span class="badge b-${v}">${v || "?"}</span>${esc(n)}<span class="n">${k || ""}</span></div>`;
+    return `<div data-img="${esc(n)}" class="${n === cur ? "cur" : ""}"><span class="badge b-${v}">${v || "?"}</span>${esc(n)}` +
+      `<span class="n">${k || ""}</span><button class="rm" data-rm="${esc(n)}" title="Remove from the task (moved to .removed/)">✕</button></div>`;
   }).join("");
 }
 function renderSide() {
@@ -426,7 +430,31 @@ function renderShapeList() {
   ).join("") || `<div class="hint" style="border:0;cursor:default">No shapes. Pick a tool and draw on the image.</div>`;
 }
 
-$("#imgs").addEventListener("click", e => { const d = e.target.closest("[data-img]"); if (d) open(d.dataset.img); });
+$("#imgs").addEventListener("click", e => {
+  const rm = e.target.closest("[data-rm]");
+  if (rm) { e.stopPropagation(); removeImage(rm.dataset.rm); return; }
+  const d = e.target.closest("[data-img]"); if (d) open(d.dataset.img);
+});
+
+async function removeImage(name) {
+  const marks = (shapes[name] || []).length, v = (info[name] || {}).verdict;
+  const what = [v && `verdict ${v}`, marks && `${marks} shape(s)`].filter(Boolean).join(" and ");
+  if (!confirm(`Remove ${name} from the task?\n\nThe file is moved to .removed/ in the task folder (not deleted).` +
+               (what ? `\nDropped with it: ${what}.` : ""))) return;
+  const j = await (await fetch("/api/remove?name=" + encodeURIComponent(name), { method: "POST" })).json();
+  if (!j.ok) { status("Remove failed: " + j.message, "err"); return; }
+  const i = T.images.indexOf(name);
+  delete shapes[name]; delete info[name]; delete cache[name];
+  T.images = T.images.filter(n => n !== name);
+  if (cur === name) {
+    cur = null;
+    const next = T.images[Math.min(i, T.images.length - 1)];
+    if (next) await open(next);
+    else { renderList(); draw(); $("#shapes").innerHTML = ""; $("#editor").style.display = "none"; $("#note").value = ""; }
+  }
+  renderList();
+  status(j.message, "good");
+}
 
 // ---------------------------------------------------------------- adding images
 const IMG_RE = /\.(png|bmp|jpe?g|tiff?)$/i;

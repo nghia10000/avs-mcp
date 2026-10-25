@@ -294,6 +294,34 @@ class Annotate(unittest.TestCase):
         self.assertEqual(up("..\\..\\up.bmp", b"BM")["name"], "up.bmp")   # folders in the name are dropped
         self.assertEqual(json.loads(self.get(url + "api/task"))["images"], ["cam 1.png", "cam 1_1.png", "up.bmp"])
 
+    def test_remove(self):
+        url = re.search(r"http://\S+/", call("avs_annotate", task_dir=self.dir, open_browser=False)[0]).group(0)
+        self.post(url, {"images": {"a.png": [{"kind": "point", "points": [[0, 0]], "label": ""}]},
+                        "image_info": {"a.png": {"verdict": "NG"}, "b.png": {"verdict": "OK"}},
+                        "renders": {"a.png": "data:image/png;base64," + base64.b64encode(self.PNG).decode()}})
+
+        def rm(name):
+            req = urllib.request.Request(url + "api/remove?name=" + urllib.parse.quote(name), b"", method="POST")
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                with e:
+                    return json.loads(e.read())
+
+        self.assertTrue(rm("a.png")["ok"])
+        self.assertTrue(os.path.exists(os.path.join(self.dir, ".removed", "a.png")))       # moved, not deleted
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "annotated", "a.png")))
+        with open(os.path.join(self.dir, "annotations.json"), encoding="utf-8") as f:
+            ann = json.load(f)
+        self.assertNotIn("a.png", ann["images"])
+        self.assertEqual(list(ann["image_info"]), ["b.png"])
+        rows = avs_mcp.task_spec.read_csv(os.path.join(self.dir, "expected.csv"))
+        self.assertEqual([r["image"] for r in rows], ["b.png"])
+        self.assertFalse(rm("a.png")["ok"])                                                  # no longer in the task
+        self.assertFalse(rm("../task.toml")["ok"])
+        self.assertEqual(json.loads(self.get(url + "api/task"))["images"], ["b.png"])
+
 
 @unittest.skipUnless(os.path.isdir(avs_mcp.FUNC_DIR), "Aurora Vision Library documentation not installed")
 class Installed(unittest.TestCase):
