@@ -444,6 +444,111 @@ class Docs(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.dir, "cache", "docs_index.json")))   # cached for next start
 
 
+PROGRAM = """//:USETYPE WORKERTASK
+public Main()
+{
+
+section PROCESS:
+\t//:HIDDENPORT[inScanWidth] TRUE
+\t//:HIDDENPORT[diagSamplingStep] TRUE
+\tScanSingleEdge
+\t(
+\t\tinImage: con_93c89ba6_a3bb_400e_8f0f_0196254989fa
+\t\tinScanWidth: 5
+\t\tinEdgeScanParams:
+\t\t\tEdgeScanParams
+\t\t\t(
+\t\t\t\tEdgeTransition: BrightToDark
+\t\t\t)
+\t\tinEdgeSelection: Best
+\t\toutEdge.Point: con_c62e1232_1a2d_41d3_a390_f15fe2b28fca
+\t\tdiagSamplingStep: Nil
+\t)
+
+\tReadFilmstrip
+\t{
+\t\tImage: Image
+\t}
+\t(
+\t\toutImage: con_93c89ba6_a3bb_400e_8f0f_0196254989fa
+\t)
+
+\tLoadObject<Region>
+\t(
+\t\tinFile: "a.avdata"
+\t\toutObject: con_46a919f8_a37a_4886_a02a_27790199c231
+\t)
+
+\tMyMacro
+\t(
+\t\tinPrivate: 1
+\t)
+
+\texpression
+\t{
+\t\tReal in__A__ as A
+\t}
+\t(
+\t\tin__A__: 1.000000
+\t)
+}
+
+public MyMacro(Integer inPrivate)
+{
+}
+"""
+
+
+class FilterPorts(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.dir, "Examples", "Demo"))
+        write(os.path.join(self.dir, "Examples", "Demo", "demo.avcode"), PROGRAM)
+        write(os.path.join(self.dir, "Examples", "Demo", "other.avcode"),
+              "public Main()\n{\n\tScanSingleEdge\n\t(\n\t\tinScanWidth: 40\n\t\tinPointAnchor: 0.000000\n\t)\n}\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def test_parse(self):
+        text, err = avs_mcp.ports.filter_ports("ScanSingleEdge", self.dir)
+        self.assertFalse(err, text)
+        self.assertIn("2 call(s) in 2 example file(s)", text)
+        self.assertRegex(text, r"inScanWidth\s+in\s+2/2\s+1\s+5; 40")             # both values, hidden once
+        self.assertRegex(text, r"outEdge.Point\s+out\s+1/2\s+-")                  # connection is not a sample value
+        self.assertIn("EdgeScanParams(EdgeTransition: BrightToDark)", text)       # multi-line structure value
+        self.assertRegex(text, r"diagSamplingStep\s+diag\s+1/2\s+1\s+Nil")
+        self.assertIn(os.path.join("Examples", "Demo", "demo.avcode") + ":8", text)
+        self.assertRegex(text, r"inPointAnchor\s+in\s+1/2\s+0.000000")
+        self.assertLess(text.index("inImage"), text.index("inScanWidth"))         # program order kept
+
+    def test_config_type_args_and_skips(self):
+        text = avs_mcp.ports.filter_ports("readfilmstrip", self.dir)[0]           # case-insensitive
+        self.assertRegex(text, r"Image\s+config\s+1/1\s+Image")
+        text = avs_mcp.ports.filter_ports("LoadObject<Region>", self.dir)[0]
+        self.assertIn("LoadObject<Region> x1", text)
+        self.assertIn('"a.avdata"', text)
+        self.assertTrue(avs_mcp.ports.filter_ports("MyMacro", self.dir)[1])       # the example's own macro
+        self.assertTrue(avs_mcp.ports.filter_ports("expression", self.dir)[1])
+
+    def test_not_found(self):
+        text, err = avs_mcp.ports.filter_ports("ScanSingleEdg", self.dir)
+        self.assertTrue(err)
+        self.assertIn("ScanSingleEdge", text)                                      # close name suggested
+        self.assertIn("avs_filter_doc", text)
+        self.assertTrue(avs_mcp.ports.filter_ports("X", os.path.join(self.dir, "none"))[1])
+
+
+@unittest.skipUnless(os.path.isdir(avs_mcp.EXAMPLES_DIR), "Aurora Vision Studio examples not installed")
+class InstalledPorts(unittest.TestCase):
+    def test_scan_single_edge(self):
+        text, err = call("avs_filter_ports", name="ScanSingleEdge")
+        self.assertFalse(err, text)
+        self.assertIn("inScanPath", text)
+        self.assertIn("outEdge.Point", text)
+        self.assertNotIn("inScanMap", text)                                        # the C++ name, not a Studio port
+
+
 @unittest.skipUnless(os.path.isdir(avs_mcp.FUNC_DIR), "Aurora Vision Library documentation not installed")
 class Installed(unittest.TestCase):
     def test_search_and_doc(self):

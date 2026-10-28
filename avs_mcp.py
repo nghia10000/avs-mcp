@@ -4,6 +4,7 @@ Python standard library only (3.11+). Tools:
   avs_search_filters  search filters in the AVL documentation installed on this machine
   avs_filter_doc      syntax, parameters and description of one filter or data type
   avs_search_examples how a filter / formula is written in the official .avcode examples
+  avs_filter_ports    real Studio port names of a filter (+ sample values), mined from the official examples
   avs_validate        load a project with AuroraVisionAvexeGenerator.exe (no GUI) and report errors
   avs_run             run a project headlessly with Aurora Vision Runtime (+ evaluate a task)
   avs_open            open a project in Aurora Vision Studio
@@ -33,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import task_spec  # noqa: E402
 import annotate  # noqa: E402
 import docs  # noqa: E402
+import ports  # noqa: E402
 from annotate import annotate_tool  # noqa: E402
 from evaluate import evaluate, split  # noqa: E402
 
@@ -329,7 +331,7 @@ Task folder: {task_dir}
     "image_info": {{"<file>": {{"verdict": "OK|NG", "note": "", "levels": [black, white]}}}}}}
 5. Fill task.toml (replace every TODO), then call avs_task_check and fix everything it reports.
    With enough images (>= ~10), call avs_split so part of them is held out; never tune on holdout images.
-6. Build the program so it appends one row per image to output.results_csv (SaveText, CreateOrAppend), using the key column and the step columns; look up filters with avs_search_filters / avs_filter_doc and real .avcode syntax with avs_search_examples; check it with avs_validate.
+6. Build the program so it appends one row per image to output.results_csv (SaveText, CreateOrAppend), using the key column and the step columns; look up filters with avs_search_filters / avs_filter_doc, their Studio port names with avs_filter_ports and real .avcode syntax with avs_search_examples; check it with avs_validate.
    Also write the measured values the decision is based on (gap brightness, areas, distances...) as extra numeric columns:
    avs_evaluate then reports how far each NG image is from the OK range.
    Ship a <Project>.avview listed in the .avproj (<View Path="..."/>) with the key outputs already placed — input/result
@@ -376,6 +378,13 @@ TOOLS = [
      "description": "Search the official .avcode Examples/Tutorials installed with Studio for a filter, formula function or syntax "
                     "(e.g. 'SaveText', 'toString', 'FitCircleToEdges') and show how it is written.",
      "inputSchema": obj({"query": S, "limit": {"type": "integer", "default": 5}}, ["query"])},
+    {"name": "avs_filter_ports",
+     "description": "Real Aurora Vision Studio port names of a filter (e.g. ScanSingleEdge -> inScanPath, outEdge.Point), "
+                    "mined from every call in the official .avcode examples: in/out/diag kind, how often each port is "
+                    "listed or hidden, sample literal values, example file:line. The AVL documentation (avs_filter_doc) "
+                    "gives C++ parameter names that often differ from Studio ports; use this before writing a filter "
+                    "call. Filters never used in the examples are not covered (close names are suggested).",
+     "inputSchema": obj({"name": S}, ["name"])},
     {"name": "avs_validate",
      "description": "Load an .avproj with AuroraVisionAvexeGenerator (no GUI) and report errors. Use after every .avcode edit.",
      "inputSchema": obj({"project": S}, ["project"])},
@@ -430,6 +439,8 @@ def call_tool(name, a):
         return docs.read(int(a.get("id", -1)), DOC_DIR, DL_DOC_DIR, int(a.get("offset", 0)), int(a.get("length", 6000)))
     if name == "avs_search_examples":
         return search_examples(a.get("query", ""), int(a.get("limit", 5))), False
+    if name == "avs_filter_ports":
+        return ports.filter_ports(a.get("name", ""), EXAMPLES_DIR)
     if name == "avs_validate":
         return validate(a.get("project", ""))
     if name == "avs_run":

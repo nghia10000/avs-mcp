@@ -40,6 +40,7 @@ Install paths are detected under `C:\Program Files\Aurora Vision`; override with
 | `avs_filter_doc` | Syntax, parameters, defaults and errors of one filter or data type |
 | `avs_docs_search` / `avs_docs_read` | Full-text (BM25) search over all docs on this machine — AVL functions and data types, Machine Vision Guide, Deep Learning, and the **Studio manual** (formulas, Optional/Conditional, project files…) after `python docs_ingest.py all_chapters.pdf` (needs `pypdf` once; the PDF comes from docs.adaptive-vision.com and is not shipped) |
 | `avs_search_examples` | How a filter / formula is actually written in the official `.avcode` examples |
+| `avs_filter_ports` | Real **Studio** port names of a filter (e.g. `ScanSingleEdge` → `inScanPath`, `outEdge.Point`), mined from every call in the official examples: in/out/diag, how often listed or hidden, sample values, file:line. The AVL docs give C++ parameter names, which often differ; filters never used in the examples are not covered |
 | `avs_validate` | Load an `.avproj` with `AuroraVisionAvexeGenerator.exe` (no GUI) and report errors |
 | `avs_run` | Run a project headlessly with the Runtime (`AuroraVisionConsole.exe`); with `task_dir` it clears the results CSV and evaluates afterwards |
 | `avs_open` | Open a project in Studio so you can press Run |
