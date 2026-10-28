@@ -31,6 +31,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import task_spec  # noqa: E402
+import annotate  # noqa: E402
 from annotate import annotate_tool  # noqa: E402
 from evaluate import evaluate, split  # noqa: E402
 
@@ -381,10 +382,12 @@ TOOLS = [
      "description": "Check a task folder: missing/TODO fields, step references, images, annotations, expected.csv columns. Returns the spec.",
      "inputSchema": obj({"task_dir": S}, ["task_dir"])},
     {"name": "avs_annotate",
-     "description": "Open a local web page (and the browser) where the user marks each image of a task OK/NG and draws defects or "
-                    "measurements (rect, polygon, line, circle, point) with a class and a description. Save writes annotations.json, "
-                    "the verdict column of expected.csv and annotated/*.png — read those PNGs to see exactly what the user marked.",
-     "inputSchema": obj({"task_dir": S, "open_browser": {"type": "boolean", "default": True}}, ["task_dir"])},
+     "description": "Show the annotation page where the user marks each image of a task OK/NG and draws defects or "
+                    "measurements (rect, polygon, line, circle, point) with a class and a description: inside the chat when the "
+                    "host supports MCP Apps, otherwise in the browser. Save writes annotations.json, the verdict column of "
+                    "expected.csv and annotated/*.png — read those PNGs to see exactly what the user marked.",
+     "inputSchema": obj({"task_dir": S, "open_browser": {"type": "boolean", "default": True}}, ["task_dir"]),
+     "_meta": {"ui": {"resourceUri": annotate.UI_URI}}},
     {"name": "avs_evaluate",
      "description": "Compare the program's results.csv with expected.csv of a task: numeric error vs tolerance, OK/NG escapes and "
                     "false rejects, reported separately for tune and holdout images. Numeric result columns not in expected.csv "
@@ -419,7 +422,7 @@ def call_tool(name, a):
     if name == "avs_task_check":
         return task_spec.check_task(a.get("task_dir", ""))
     if name == "avs_annotate":
-        return annotate_tool(a.get("task_dir", ""), bool(a.get("open_browser", True)))
+        return annotate_tool(a.get("task_dir", ""), bool(a.get("open_browser", True)), in_chat=CLIENT["ui"])
     if name == "avs_evaluate":
         return evaluate(a.get("task_dir", ""), a.get("results"), a.get("expected"), a.get("key"), a.get("tolerances"))
     if name == "avs_split":
@@ -435,21 +438,46 @@ def get_prompt(name, args):
             "messages": [{"role": "user", "content": {"type": "text", "text": text}}]}
 
 
+CLIENT = {"ui": False}                                # does the host render MCP Apps (set by initialize)
+
+
+def client_supports_ui(params):
+    ext = ((params or {}).get("capabilities") or {}).get("extensions") or {}
+    return annotate.UI_MIME in ((ext.get(annotate.UI_EXTENSION) or {}).get("mimeTypes") or [])
+
+
 def handle(msg):
     method, mid = msg.get("method"), msg.get("id")
     if method == "initialize":
         ver = msg.get("params", {}).get("protocolVersion", "2025-06-18")
-        result = {"protocolVersion": ver, "capabilities": {"tools": {}, "prompts": {}},
+        CLIENT["ui"] = client_supports_ui(msg.get("params"))
+        result = {"protocolVersion": ver, "capabilities": {"tools": {}, "prompts": {}, "resources": {}},
                   "serverInfo": {"name": "avs", "version": VERSION}}
     elif method == "tools/list":
-        result = {"tools": TOOLS}
+        # app-only tools serve the in-chat page; hosts without MCP Apps would show them to the model, so hide them there
+        result = {"tools": TOOLS + (annotate.APP_TOOLS if CLIENT["ui"] else [])}
     elif method == "tools/call":
         p = msg.get("params", {})
+        name, args = p.get("name"), p.get("arguments") or {}
+        structured = None
         try:
-            text, err = call_tool(p.get("name"), p.get("arguments") or {})
+            if name in annotate.APP_TOOL_NAMES:
+                (text, structured), err = annotate.app_call(name, args), False
+            else:
+                text, err = call_tool(name, args)
         except Exception as e:  # tool errors go back to the assistant instead of killing the server
             text, err = f"{type(e).__name__}: {e}", True
         result = {"content": [{"type": "text", "text": text}], "isError": err}
+        if structured is not None:
+            result["structuredContent"] = structured
+    elif method == "resources/list":
+        result = {"resources": [{"uri": annotate.UI_URI, "name": "avs_annotate_page", "mimeType": annotate.UI_MIME,
+                                 "description": "Annotation page: mark images OK/NG and draw defects."}]}
+    elif method == "resources/read":
+        uri = (msg.get("params") or {}).get("uri")
+        if uri != annotate.UI_URI:
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32002, "message": f"Resource not found: {uri}"}}
+        result = {"contents": [annotate.ui_resource()]}
     elif method == "prompts/list":
         result = {"prompts": PROMPTS}
     elif method == "prompts/get":

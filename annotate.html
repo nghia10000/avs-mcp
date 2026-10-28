@@ -90,6 +90,7 @@
   <div class="grow"></div>
   <button id="prev" title="Previous image (←)">◀</button>
   <button id="next" title="Next image (→)">▶</button>
+  <button id="full" title="Fullscreen in the chat" hidden>⛶</button>
   <button id="save" class="primary" title="Save (Ctrl+S)">Save</button>
 </header>
 
@@ -157,6 +158,65 @@ let proc = document.createElement("canvas");   // current image with levels appl
 let view = { s: 1, x: 0, y: 0 };
 let tool = "select", drawing = null, sel = -1, drag = null, dirty = false, spaceDown = false, lastClass = "";
 
+// ---------------------------------------------------------------- transport
+// Two ways to reach the task: inside the chat as an MCP App (JSON-RPC over postMessage to the host, which forwards
+// tools/call to the avs server), or in a browser tab served by annotate.py over HTTP. Everything below uses
+// getTask / imageURL / apiSave / apiUpload / apiRemove and does not care which.
+const host = { mcp: false, taskDir: null, nextId: 1, pending: {}, ctx: {}, caps: {} };
+host.input = new Promise(res => { host.onInput = res; });
+
+function hostSend(msg) { window.parent.postMessage(msg, "*"); }
+function hostRequest(method, params, timeout = 0) {
+  const id = host.nextId++;
+  return new Promise((resolve, reject) => {
+    host.pending[id] = { resolve, reject };
+    if (timeout) setTimeout(() => { if (host.pending[id]) { delete host.pending[id]; reject(new Error("timeout")); } }, timeout);
+    hostSend({ jsonrpc: "2.0", id, method, params });
+  });
+}
+window.addEventListener("message", e => {
+  if (e.source !== window.parent || window.parent === window) return;
+  const m = e.data;
+  if (!m || m.jsonrpc !== "2.0") return;
+  if (m.id != null && !m.method) {                        // response to one of our requests
+    const p = host.pending[m.id];
+    if (!p) return;
+    delete host.pending[m.id];
+    if (m.error) p.reject(new Error(m.error.message || JSON.stringify(m.error))); else p.resolve(m.result);
+  } else if (m.method === "ui/notifications/tool-input") {
+    host.onInput((m.params && m.params.arguments) || {});
+  } else if (m.method === "ui/notifications/host-context-changed") {
+    Object.assign(host.ctx, m.params || {});
+  } else if (m.method === "ui/resource-teardown" || m.method === "ping") {
+    hostSend({ jsonrpc: "2.0", id: m.id, result: {} });
+  } else if (m.id != null) {
+    hostSend({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: `Method not found: ${m.method}` } });
+  }
+});
+
+async function connectHost() {
+  if (window.parent === window) return false;
+  try {
+    const r = await hostRequest("ui/initialize", {
+      appInfo: { name: "avs-annotate", version: "1.0.0" },
+      appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
+      protocolVersion: "2026-01-26" }, 3000);
+    host.ctx = r.hostContext || {}; host.caps = r.hostCapabilities || {};
+    hostSend({ jsonrpc: "2.0", method: "ui/notifications/initialized" });
+    host.mcp = true;
+    return true;
+  } catch (e) { return false; }
+}
+
+async function callTool(name, args = {}) {
+  try {
+    const r = await hostRequest("tools/call", { name, arguments: Object.assign({ task_dir: host.taskDir }, args) });
+    const text = ((r.content || []).find(c => c.type === "text") || {}).text || "";
+    if (r.isError) return { ok: false, message: text || "tool error" };
+    return Object.assign({ ok: true, message: text }, r.structuredContent || {});
+  } catch (e) { return { ok: false, message: e.message }; }
+}
+
 async function api(url, opts) {
   // A server older than this page answers new endpoints with a plain 404: say so instead of failing silently.
   const r = await fetch(url, opts);
@@ -168,6 +228,52 @@ async function api(url, opts) {
       : `HTTP ${r.status}: ${text.slice(0, 120)}` };
   }
 }
+
+async function getTask() {
+  if (!host.mcp) return (await fetch("/api/task")).json();
+  const r = await callTool("avs_ui_task");
+  if (!r.ok) throw new Error(r.message);
+  return r;
+}
+async function imageURL(name) {
+  if (!host.mcp) return "/img/" + encodeURIComponent(name);
+  const r = await callTool("avs_ui_image", { name });
+  if (!r.ok) throw new Error(r.message);
+  return `data:${r.mimeType};base64,${r.data}`;
+}
+const apiSave = body => host.mcp ? callTool("avs_ui_save", body)
+  : api("/api/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const apiRemove = name => host.mcp ? callTool("avs_ui_remove", { name })
+  : api("/api/remove?name=" + encodeURIComponent(name), { method: "POST" });
+async function apiUpload(file) {
+  if (!host.mcp) return api("/api/upload?name=" + encodeURIComponent(file.name), { method: "POST", body: file });
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return callTool("avs_ui_upload", { name: file.name, data: btoa(bin) });
+}
+
+// In the chat the page gets a fixed height and reports it; the host may also offer fullscreen.
+function setupInChat() {
+  const dims = host.ctx.containerDimensions || {};
+  if (!("height" in dims)) {
+    const h = Math.min(dims.maxHeight || 760, 760);
+    document.documentElement.style.height = h + "px";
+    document.body.style.height = h + "px";
+  }
+  const report = () => hostSend({ jsonrpc: "2.0", method: "ui/notifications/size-changed",
+    params: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight } });
+  new ResizeObserver(report).observe(document.documentElement);
+  report();
+  if ((host.ctx.availableDisplayModes || []).includes("fullscreen")) {
+    const b = $("#full");
+    b.hidden = false;
+    b.addEventListener("click", async () => {
+      const want = host.ctx.displayMode === "fullscreen" ? "inline" : "fullscreen";
+      try { const r = await hostRequest("ui/request-display-mode", { mode: want }); host.ctx.displayMode = r.mode; } catch (e) { }
+    });
+  }
+}
 function status(msg, cls = "") { const s = $("#status"); s.textContent = msg; s.title = msg; s.className = cls; }
 function color(c) { let h = 0; for (const ch of c || "") h = (h * 31 + ch.charCodeAt(0)) >>> 0; return c ? PALETTE[h % PALETTE.length] : "#ffd400"; }
 function setDirty(v = true) { dirty = v; $("#save").textContent = v ? "Save *" : "Save"; }
@@ -176,7 +282,13 @@ const inf = () => (info[cur] = info[cur] || {});
 
 // ---------------------------------------------------------------- loading
 async function init() {
-  T = await (await fetch("/api/task")).json();
+  if (await connectHost()) {
+    status("Connected to the chat; waiting for the task…");
+    const args = await host.input;
+    host.taskDir = args.task_dir;
+    setupInChat();
+  }
+  T = await getTask();
   document.title = `${T.name} — AVS Annotate`;
   $("#title").textContent = T.name;
   $("#title").title = T.task_dir;
@@ -192,8 +304,9 @@ async function init() {
   status(`${T.images.length} image(s) · verdicts → ${T.expected_file} [${T.verdict_col}]`);
 }
 
-function loadImage(name) {
-  if (cache[name]) return Promise.resolve(cache[name]);
+async function loadImage(name) {
+  if (cache[name]) return cache[name];
+  const src = await imageURL(name);
   return new Promise((res, rej) => {
     const img = new Image();
     img.onload = () => {
@@ -204,7 +317,7 @@ function loadImage(name) {
       res(cache[name]);
     };
     img.onerror = () => rej(new Error(`The browser cannot show ${name} (TIFF?). Convert it to PNG.`));
-    img.src = "/img/" + encodeURIComponent(name);
+    img.src = src;
   });
 }
 
@@ -473,7 +586,7 @@ function disarm() {
 }
 
 async function removeImage(name) {
-  const j = await api("/api/remove?name=" + encodeURIComponent(name), { method: "POST" });
+  const j = await apiRemove(name);
   if (!j.ok) { status("Remove failed: " + j.message, "err"); return; }
   const i = T.images.indexOf(name);
   delete shapes[name]; delete info[name]; delete cache[name];
@@ -498,13 +611,13 @@ async function upload(files) {
   for (const [i, f] of imgs.entries()) {
     status(`Adding ${i + 1}/${imgs.length}: ${f.name}`);
     try {
-      const j = await api("/api/upload?name=" + encodeURIComponent(f.name), { method: "POST", body: f });
+      const j = await apiUpload(f);
       if (!j.ok) failed.push(`${f.name} (${j.message})`);
       else if (j.message.startsWith("already")) same++;
       else { added++; if (j.name !== f.name) renamed.push(`${f.name} -> ${j.name}`); }
     } catch (e) { failed.push(`${f.name} (${e.message})`); }
   }
-  T.images = (await (await fetch("/api/task")).json()).images;
+  T.images = (await getTask()).images;
   renderList();
   if (!cur && T.images.length) await open(T.images[0]);
   let msg = `${added} image(s) added, ${same} already in the task`;
@@ -630,11 +743,14 @@ async function saveAll() {
     }
   }
   try {
-    const j = await api("/api/save", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ images, image_info: info, renders }) });
+    const j = await apiSave({ images, image_info: info, renders });
     if (!j.ok) throw new Error(j.message);
     setDirty(false); refreshClasses();
     status(j.message, "good");
+    if (host.mcp)                                        // let the assistant know without the user retyping it
+      hostRequest("ui/update-model-context", { content: [{ type: "text",
+        text: `The user saved the annotations of task ${host.taskDir}: ${j.message} Read annotated/*.png before building.` }] })
+        .catch(() => { });
   } catch (e) { status("Save failed: " + e.message, "err"); }
 }
 

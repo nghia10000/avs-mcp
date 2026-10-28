@@ -264,8 +264,9 @@ def check_task(task_dir):
     else:
         warnings.append("no ground truth ([expected] file) — results can only be checked by eye")
 
+    step_list = ", ".join(f"{s.get('id')}:{s.get('type')}/{s.get('method')}" for s in steps)  # 3.11: no nested quotes
     summary = (f"task '{spec.get('task', {}).get('name', '?')}': {len(steps)} step(s) "
-               f"[{', '.join(f'{s.get('id')}:{s.get('type')}/{s.get('method')}' for s in steps)}], "
+               f"[{step_list}], "
                f"{len(images)} image(s), {n_ann} annotation(s), {n_exp} expected row(s), "
                f"result columns: {', '.join(columns) or '-'}")
     head = "OK — spec is complete." if not errors else f"{len(errors)} problem(s) to fix."

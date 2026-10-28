@@ -10,7 +10,7 @@ An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant (Clau
 
 - Windows, Aurora Vision Studio 5.x Professional + Aurora Vision Library documentation (tested with 5.6)
 - Aurora Vision Studio **Runtime** of the same version, for `avs_run` (optional — without it you press Run in Studio)
-- Python 3.12+ (standard library only, nothing to `pip install`)
+- Python 3.11+ (standard library only, nothing to `pip install`; tested with 3.11 and 3.14)
 
 ## Install
 
@@ -74,6 +74,8 @@ my_task/
 
 Save writes `annotations.json`, `expected.csv` (other columns are kept) and `annotated/*.png`, where every image is rendered with its levels, shapes, classes and descriptions. The assistant reads those PNGs, so it sees exactly what you marked instead of guessing from the raw image.
 
+**Inside the chat (MCP Apps).** When the host announces the MCP Apps extension (`io.modelcontextprotocol/ui`), `avs_annotate` is rendered in the conversation instead of a browser tab: the server exposes the page as the resource `ui://avs/annotate.html` and five app-only tools (`avs_ui_task`, `avs_ui_image`, `avs_ui_save`, `avs_ui_upload`, `avs_ui_remove`, visibility `["app"]`, listed only to such hosts). The page detects where it runs: in the chat it talks JSON-RPC over `postMessage` and gets images as base64; in a browser tab it uses the local HTTP server as before. After Save it tells the assistant through `ui/update-model-context`. Hosts without MCP Apps keep the browser page. Some hosts announce the extension without rendering it — Claude Code (also the Code tab of the desktop app) runs the tool as text only; the Claude desktop chat and claude.ai render it — so if the page has not called back within 8 s, `avs_annotate` opens it in the browser anyway. To try the in-chat mode without a supporting host: `python tests/fake_app_host.py <task_dir>` runs a minimal host that loads the page in a sandboxed iframe and logs every message.
+
 `task.toml` has three layers:
 
 1. **Common sections** for every job: `[task]`, `[conditions]`, `[calibration]`, `[output]`, `[expected]`, optional `[[features]]`.
@@ -130,9 +132,10 @@ MIT — see [LICENSE](LICENSE).
 
 MCP server giúp trợ lý AI viết và kiểm tra chương trình **Aurora Vision Studio**: tra filter trong tài liệu và các ví dụ chính hãng có trên máy, nạp và **chạy** project không cần mở giao diện (`avs_run`, cần cài Runtime cùng phiên bản), và mô tả bài toán machine vision bằng một **thư mục task** (`task.toml` + ảnh có vẽ đánh dấu + `expected.csv` đáp án) để trợ lý tự viết → chạy → so đáp án → sửa.
 
-- Cài: clone repo, thêm vào `.mcp.json` như trên. Cần Python 3.12+, không cần cài thêm thư viện.
+- Cài: clone repo, thêm vào `.mcp.json` như trên. Cần Python 3.11+, không cần cài thêm thư viện.
 - Mô tả bài toán: gọi prompt `describe_task`, trợ lý sẽ hỏi từng ý (đo gì, chi tiết trông thế nào, ảnh thay đổi ra sao, dung sai, đáp án mẫu…) rồi tạo thư mục task.
 - Bài toán phức tạp = chuỗi bước, mỗi bước một loại (`measure`, `defect`, …) và ghi rõ `rule` / `deep`.
+- Nếu ứng dụng chat hỗ trợ MCP Apps, trang đánh dấu hiện ngay trong khung chat; nếu không thì mở trên trình duyệt như cũ.
 - Đánh dấu ảnh: `avs_annotate` mở trang web cục bộ — chọn OK/NG cho từng ảnh, khoanh lỗi (hộp, đa giác, đường, tròn, điểm) kèm loại lỗi và mô tả, kéo mức Black/White để thấy lỗi mờ. Lưu ra `annotations.json`, `expected.csv` và `annotated/*.png` để trợ lý xem đúng chỗ bạn khoanh.
 - Chấm điểm: đáp án là của người (QC đánh OK/NG, số đo thước cặp/CMM, lỗi khoanh bằng `avs_annotate`). `avs_evaluate` ngoài đúng/sai còn báo **khoảng cách an toàn** (ảnh NG cách khoảng giá trị của ảnh OK bao xa, ảnh nào sát ngưỡng) và chấm riêng **ảnh để dành** (`avs_split` chia ảnh dùng để chỉnh / ảnh để kiểm tra).
 - Chưa có: hỗ trợ Deep Learning — xem roadmap.

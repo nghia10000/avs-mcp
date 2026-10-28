@@ -8,7 +8,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -321,6 +323,94 @@ class Annotate(unittest.TestCase):
         self.assertFalse(rm("a.png")["ok"])                                                  # no longer in the task
         self.assertFalse(rm("../task.toml")["ok"])
         self.assertEqual(json.loads(self.get(url + "api/task"))["images"], ["b.png"])
+
+
+def rpc(method, params=None):
+    return avs_mcp.handle({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}})
+
+
+UI_INIT = {"protocolVersion": "2025-06-18",
+           "capabilities": {"extensions": {"io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}}}}
+
+
+class McpApp(unittest.TestCase):
+    """The annotation page as an MCP App: resource, app-only tools, host capability check."""
+    PNG = Annotate.PNG
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.dir, "images"))
+        for n in ("a.png", "b.png"):
+            with open(os.path.join(self.dir, "images", n), "wb") as f:
+                f.write(self.PNG)
+
+    def tearDown(self):
+        rpc("initialize", {"protocolVersion": "2025-06-18"})          # back to a host without MCP Apps
+        shutil.rmtree(self.dir)
+
+    def app(self, tool, **args):
+        return rpc("tools/call", {"name": tool, "arguments": dict(task_dir=self.dir, **args)})["result"]
+
+    def test_host_without_ui(self):
+        caps = rpc("initialize", {"protocolVersion": "2025-06-18"})["result"]["capabilities"]
+        self.assertIn("resources", caps)
+        tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
+        self.assertFalse([n for n in tools if n.startswith("avs_ui_")])          # not shown to the model
+        self.assertEqual(tools["avs_annotate"]["_meta"]["ui"]["resourceUri"], "ui://avs/annotate.html")
+        text, err = call("avs_annotate", task_dir=self.dir, open_browser=False)
+        self.assertNotIn("appear in the chat", text)
+
+    def test_host_with_ui(self):
+        rpc("initialize", UI_INIT)
+        tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
+        app_tools = [n for n in tools if n.startswith("avs_ui_")]
+        self.assertEqual(len(app_tools), 5)
+        for n in app_tools:
+            self.assertEqual(tools[n]["_meta"]["ui"]["visibility"], ["app"])
+        res = rpc("resources/list")["result"]["resources"]
+        self.assertEqual(res[0]["uri"], "ui://avs/annotate.html")
+        page = rpc("resources/read", {"uri": "ui://avs/annotate.html"})["result"]["contents"][0]
+        self.assertEqual(page["mimeType"], "text/html;profile=mcp-app")
+        self.assertIn("ui/initialize", page["text"])
+        self.assertIn("error", rpc("resources/read", {"uri": "ui://avs/nope.html"}))
+        text, err = call("avs_annotate", task_dir=self.dir, open_browser=False)
+        self.assertFalse(err, text)
+        self.assertIn("should appear in the chat", text)
+
+    def test_browser_fallback_when_host_does_not_render(self):
+        # Claude Code announces MCP Apps but never shows the page: no app-tool call -> open the browser after a delay
+        rpc("initialize", UI_INIT)
+        opened = []
+        with unittest.mock.patch.object(avs_mcp.annotate, "UI_FALLBACK_S", 0.2), \
+             unittest.mock.patch.object(avs_mcp.annotate.webbrowser, "open", opened.append):
+            call("avs_annotate", task_dir=self.dir)
+            time.sleep(0.5)
+            self.assertEqual(len(opened), 1)                     # nothing rendered it
+            opened.clear()
+            call("avs_annotate", task_dir=self.dir)
+            self.app("avs_ui_task")                              # the page connected in time
+            time.sleep(0.5)
+            self.assertEqual(opened, [])
+
+    def test_app_tools(self):
+        rpc("initialize", UI_INIT)
+        r = self.app("avs_ui_task")
+        self.assertFalse(r["isError"], r)
+        self.assertEqual(r["structuredContent"]["images"], ["a.png", "b.png"])
+        img = self.app("avs_ui_image", name="a.png")["structuredContent"]
+        self.assertEqual((img["mimeType"], base64.b64decode(img["data"])), ("image/png", self.PNG))
+        self.assertTrue(self.app("avs_ui_image", name="../task.toml")["isError"])
+
+        r = self.app("avs_ui_upload", name="c.png", data=base64.b64encode(self.PNG + b"c").decode())
+        self.assertEqual(r["structuredContent"]["name"], "c.png")
+        r = self.app("avs_ui_save", images={"c.png": [{"kind": "point", "points": [[0, 0]], "label": "dot"}]},
+                     image_info={"a.png": {"verdict": "OK"}, "c.png": {"verdict": "NG"}}, renders={})
+        self.assertFalse(r["isError"], r)
+        rows = {r["image"]: r["result"] for r in avs_mcp.task_spec.read_csv(os.path.join(self.dir, "expected.csv"))}
+        self.assertEqual(rows, {"a.png": "OK", "c.png": "NG"})
+        self.assertFalse(self.app("avs_ui_remove", name="c.png")["isError"])
+        self.assertEqual(self.app("avs_ui_task")["structuredContent"]["images"], ["a.png", "b.png"])
+        self.assertTrue(os.path.exists(os.path.join(self.dir, ".removed", "c.png")))
 
 
 @unittest.skipUnless(os.path.isdir(avs_mcp.FUNC_DIR), "Aurora Vision Library documentation not installed")

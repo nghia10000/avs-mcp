@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import threading
+import time
 import webbrowser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -265,10 +266,93 @@ def serve(task_dir, port=0, open_browser=True):
     return url
 
 
-def annotate_tool(task_dir, open_browser=True):
+# ------------------------------------------------------------------ MCP App (page inside the chat)
+# Hosts that support MCP Apps (extension io.modelcontextprotocol/ui) render UI_URI in an iframe when avs_annotate
+# is called. The same annotate.html then talks JSON-RPC over postMessage and reaches the task through the
+# app-only tools below instead of the HTTP endpoints; image bytes travel as base64 (the iframe CSP only allows data:).
+
+UI_URI = "ui://avs/annotate.html"
+UI_MIME = "text/html;profile=mcp-app"
+UI_EXTENSION = "io.modelcontextprotocol/ui"
+
+
+def ui_resource():
+    with open(PAGE, encoding="utf-8") as f:
+        html = f.read()
+    return {"uri": UI_URI, "mimeType": UI_MIME, "text": html,
+            "_meta": {"ui": {"prefersBorder": True}}}
+
+
+def _app_tool(name, description, props, required):
+    return {"name": name, "description": description,
+            "inputSchema": {"type": "object", "properties": props, "required": required},
+            "_meta": {"ui": {"resourceUri": UI_URI, "visibility": ["app"]}}}
+
+
+_S = {"type": "string"}
+APP_TOOLS = [
+    _app_tool("avs_ui_task", "Annotation page: task state (images, shapes, verdicts).", {"task_dir": _S}, ["task_dir"]),
+    _app_tool("avs_ui_image", "Annotation page: one image as base64.", {"task_dir": _S, "name": _S}, ["task_dir", "name"]),
+    _app_tool("avs_ui_save", "Annotation page: save shapes, verdicts and renders.",
+              {"task_dir": _S, "images": {"type": "object"}, "image_info": {"type": "object"},
+               "renders": {"type": "object"}}, ["task_dir"]),
+    _app_tool("avs_ui_upload", "Annotation page: add one image (base64) to the task.",
+              {"task_dir": _S, "name": _S, "data": _S}, ["task_dir", "name", "data"]),
+    _app_tool("avs_ui_remove", "Annotation page: move one image out of the task.",
+              {"task_dir": _S, "name": _S}, ["task_dir", "name"]),
+]
+APP_TOOL_NAMES = {t["name"] for t in APP_TOOLS}
+# Hosts may announce the extension without rendering it (Claude Code does). The page calls back as soon as it
+# is shown, so the time of its last call per task tells avs_annotate whether to fall back to the browser.
+UI_FALLBACK_S = 8
+_ui_seen = {}
+
+
+def app_call(name, a):
+    """tools/call result for an app-only tool: short text plus structuredContent for the page."""
+    task_dir = a.get("task_dir", "")
+    if not os.path.isdir(task_dir):
+        raise FileNotFoundError(f"Task folder not found: {task_dir}")
+    _ui_seen[os.path.abspath(task_dir)] = time.monotonic()
+    if name == "avs_ui_task":
+        state = task_state(task_dir)
+        return f"{len(state['images'])} image(s)", state
+    if name == "avs_ui_image":
+        p = task_paths(task_dir)
+        img = a.get("name", "")
+        if img not in p["images"]:
+            raise ValueError(f"{img!r} is not an image of this task")
+        with open(os.path.join(p["img_dir"], img), "rb") as f:
+            data = base64.b64encode(f.read()).decode("ascii")
+        mime = MIME.get(os.path.splitext(img)[1].lower(), "application/octet-stream")
+        return img, {"name": img, "mimeType": mime, "data": data}
+    if name == "avs_ui_save":
+        msg = save(task_dir, a)
+        return msg, {"message": msg}
+    if name == "avs_ui_upload":
+        target, status = add_image(task_dir, a.get("name", ""), base64.b64decode(a.get("data", "")))
+        return status, {"name": target, "message": status}
+    if name == "avs_ui_remove":
+        msg = remove_image(task_dir, a.get("name", ""))
+        return msg, {"message": msg}
+    raise ValueError(f"Unknown app tool: {name}")
+
+
+def annotate_tool(task_dir, open_browser=True, in_chat=False):
     p = task_paths(task_dir)
-    url = serve(task_dir, open_browser=open_browser)
-    return (f"Annotation page for {len(p['images'])} image(s): {url}\n"
+    task_dir = os.path.abspath(task_dir)
+    url = serve(task_dir, open_browser=open_browser and not in_chat)
+    if in_chat and open_browser:
+        asked = time.monotonic()
+
+        def fallback():
+            if _ui_seen.get(task_dir, 0) < asked:          # the page never called back: the host did not render it
+                webbrowser.open(url)
+        threading.Timer(UI_FALLBACK_S, fallback).start()
+    where = (f"The host supports MCP Apps, so the page should appear in the chat; if it has not connected within "
+             f"{UI_FALLBACK_S} s (hosts such as Claude Code do not render MCP Apps) it opens in the browser at {url}."
+             if in_chat else f"Annotation page: {url}")
+    return (f"{where}\nTask: {task_dir}, {len(p['images'])} image(s).\n"
             f"Images can be added on the page (+ Files / + Folder / drag and drop); they are copied into {p['img_dir']}.\n"
             f"Ask the user to mark each image OK/NG, draw every defect (rect/polygon/line/point/circle) with a class and a "
             f"description, then press Save. Verdicts go to {p['exp_file']} (column '{p['verdict_col']}'), shapes to "
