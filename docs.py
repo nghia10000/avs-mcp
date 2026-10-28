@@ -1,8 +1,9 @@
 """docs.py — full-text search (BM25) over every Aurora Vision document available on this machine.
 
 Sources: the installed Aurora Vision Library documentation (functions, data types, Machine Vision Guide, technical
-issues, getting started), the installed Aurora Deep Learning documentation, and the Studio manual converted from its
-printable PDF by docs_ingest.py (<cache>/studio_*_sections.jsonl). Standard library only. The index is built on the
+issues, getting started), the installed Aurora Deep Learning documentation, the Studio manual converted from its
+printable PDF by docs_ingest.py (<cache>/studio_*_sections.jsonl) and the Studio Filter Reference pages downloaded by
+filters_fetch.py (<cache>/studio_filters, with Studio port names). Standard library only. The index is built on the
 first search and kept in <cache>/docs_index.json until a source folder changes.
 """
 
@@ -25,7 +26,10 @@ def html_text(path):
         t = f.read()
     m = re.search(r"(?is)<title>(.*?)</title>", t)
     title = html.unescape(m.group(1)).strip() if m else os.path.splitext(os.path.basename(path))[0]
-    t = re.sub(r"(?s)<(script|style|nav|header|footer).*?</\1>", " ", t)
+    title = re.sub(r"\s+-\s+Aurora Vision$", "", title)
+    t = re.sub(r"(?s)<(script|style|nav|header|footer|head)\b.*?</\1>", " ", t)
+    t = re.sub(r'(?s)<ul id="main-navigation">.*?</ul>|<a [^>]*class="action"[^>]*>.*?</a>', " ", t)  # web page menu
+    t = re.sub(r"(?is)<tr\b.*?</tr>", lambda r: re.sub(r"\s+", " ", r.group(0)), t)   # one table row per line
     t = re.sub(r"(?i)<br\s*/?>|</p>|</tr>|</h\d>|</li>|</div>", "\n", t)
     t = re.sub(r"(?i)</t[dh]>", " | ", t)
     t = html.unescape(re.sub(r"<[^>]+>", " ", t)).replace("​", "")
@@ -56,14 +60,35 @@ def sources(doc_dir, dl_doc_dir):
             out.append((label, "html", os.path.join(doc_dir, sub)))
     if dl_doc_dir and os.path.isdir(dl_doc_dir):
         out.append(("Deep Learning", "html", dl_doc_dir))
+    if os.path.isdir(studio_filters_dir()):
+        out.append(("Studio filter", "html", studio_filters_dir()))
     for p in sorted(glob.glob(os.path.join(CACHE, "studio_*_sections.jsonl"))):
         ver = re.search(r"studio_(.+)_sections", p).group(1)
         out.append((f"Studio {ver} manual", "jsonl", p))
     return out
 
 
+def studio_filters_dir():
+    """Studio Filter Reference pages (<Category>/<Filter>.html) downloaded by filters_fetch.py."""
+    return os.path.join(CACHE, "studio_filters")
+
+
+def studio_filter_page(name):
+    """Path of the Studio Filter Reference page of a filter, or None."""
+    hits = glob.glob(os.path.join(glob.escape(studio_filters_dir()), "*", glob.escape(name) + ".html"))
+    return sorted(hits)[0] if hits else None
+
+
+def mtime(root):
+    """Newest mtime of a source and its direct subfolders (a page added to a category changes only the category's)."""
+    t = os.path.getmtime(root)
+    if os.path.isdir(root):
+        t = max([t] + [e.stat().st_mtime for e in os.scandir(root) if e.is_dir()])
+    return t
+
+
 def signature(srcs):
-    return [[label, root, os.path.getmtime(root)] for label, _, root in srcs]
+    return [[label, root, mtime(root)] for label, _, root in srcs]
 
 
 def build(srcs):
@@ -78,6 +103,8 @@ def build(srcs):
             continue
         for path in sorted(glob.glob(os.path.join(root, "**", "*.html"), recursive=True)):
             if label == "Deep Learning" and os.sep + "net" + os.sep in path:    # C# API pages: noise for Studio work
+                continue
+            if label == "Studio filter" and os.path.dirname(path) == root:    # AllFilters.html: a list of links
                 continue
             title, text = html_text(path)
             if len(text) > 40:

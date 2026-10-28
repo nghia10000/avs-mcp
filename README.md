@@ -37,8 +37,8 @@ Install paths are detected under `C:\Program Files\Aurora Vision`; override with
 | Tool | What it does |
 |---|---|
 | `avs_search_filters` | Search filters by keyword in the installed AVL documentation |
-| `avs_filter_doc` | Syntax, parameters, defaults and errors of one filter or data type |
-| `avs_docs_search` / `avs_docs_read` | Full-text (BM25) search over all docs on this machine — AVL functions and data types, Machine Vision Guide, Deep Learning, and the **Studio manual** (formulas, Optional/Conditional, project files…) after `python docs_ingest.py all_chapters.pdf` (needs `pypdf` once; the PDF comes from docs.adaptive-vision.com and is not shipped) |
+| `avs_filter_doc` | Syntax, parameters, defaults and errors of one filter or data type; shows the **Studio Filter Reference** page (Studio port names) first when it has been downloaded (see below) |
+| `avs_docs_search` / `avs_docs_read` | Full-text (BM25) search over all docs on this machine — AVL functions and data types, Machine Vision Guide, Deep Learning, and the **Studio manual** (formulas, Optional/Conditional, project files…) after `python docs_ingest.py all_chapters.pdf` (needs `pypdf` once; the PDF comes from docs.adaptive-vision.com and is not shipped), and the **Studio Filter Reference** (source `Studio filter`) after `python filters_fetch.py` |
 | `avs_search_examples` | How a filter / formula is actually written in the official `.avcode` examples |
 | `avs_filter_ports` | Real **Studio** port names of a filter (e.g. `ScanSingleEdge` → `inScanPath`, `outEdge.Point`), mined from every call in the official examples: in/out/diag, how often listed or hidden, sample values, file:line. The AVL docs give C++ parameter names, which often differ; filters never used in the examples are not covered |
 | `avs_validate` | Load an `.avproj` with `AuroraVisionAvexeGenerator.exe` (no GUI) and report errors |
@@ -52,6 +52,21 @@ Install paths are detected under `C:\Program Files\Aurora Vision`; override with
 | `avs_split` | Mark part of the images as holdout (kept out of tuning) |
 
 Prompt: **`describe_task`** — the assistant interviews you and writes the task spec.
+
+### Studio Filter Reference (optional download)
+
+The installed AVL docs describe C++ functions, whose parameters differ from Studio filter ports. The public Studio
+Filter Reference on docs.adaptive-vision.com has one page per filter with its Studio port table. Download it once
+(~3,750 pages, ~55 MB, sequential with a 0.7 s pause: about an hour; rerunning skips pages already there):
+
+```bash
+python filters_fetch.py
+```
+
+Pages go to `../avs_docs_cache/studio_filters` (or `$AVS_DOCS_CACHE/studio_filters`), outside the repo: they are
+Zebra's content and are not shipped. The search index is rebuilt automatically on the next `avs_docs_search`. The
+pages describe the current online version (5.7.x at the time of writing), which can differ slightly from an older
+installed Studio.
 
 ## Task spec
 
@@ -135,6 +150,7 @@ MIT — see [LICENSE](LICENSE).
 MCP server giúp trợ lý AI viết và kiểm tra chương trình **Aurora Vision Studio**: tra filter trong tài liệu và các ví dụ chính hãng có trên máy, nạp và **chạy** project không cần mở giao diện (`avs_run`, cần cài Runtime cùng phiên bản), và mô tả bài toán machine vision bằng một **thư mục task** (`task.toml` + ảnh có vẽ đánh dấu + `expected.csv` đáp án) để trợ lý tự viết → chạy → so đáp án → sửa.
 
 - Cài: clone repo, thêm vào `.mcp.json` như trên. Cần Python 3.11+, không cần cài thêm thư viện.
+- Tra cứu cổng (port) Studio của filter: chạy `python filters_fetch.py` một lần để tải Filter Reference công khai (~55 MB, không đưa vào repo).
 - Mô tả bài toán: gọi prompt `describe_task`, trợ lý sẽ hỏi từng ý (đo gì, chi tiết trông thế nào, ảnh thay đổi ra sao, dung sai, đáp án mẫu…) rồi tạo thư mục task.
 - Bài toán phức tạp = chuỗi bước, mỗi bước một loại (`measure`, `defect`, …) và ghi rõ `rule` / `deep`.
 - Nếu ứng dụng chat hỗ trợ MCP Apps, trang đánh dấu hiện ngay trong khung chat; nếu không thì mở trên trình duyệt như cũ.

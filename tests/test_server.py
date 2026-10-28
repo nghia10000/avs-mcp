@@ -443,6 +443,41 @@ class Docs(unittest.TestCase):
         self.assertTrue(avs_mcp.docs.read(99, doc, None)[1])
         self.assertTrue(os.path.exists(os.path.join(self.dir, "cache", "docs_index.json")))   # cached for next start
 
+    def test_studio_filter_pages(self):
+        doc = os.path.join(self.dir, "doc")
+        avs_mcp.docs.search("edge", doc, None)                  # index built before the pages exist
+        pages = os.path.join(self.dir, "cache", "studio_filters")
+        os.makedirs(os.path.join(pages, "1DEdgeDetection"))
+        write(os.path.join(pages, "AllFilters.html"),
+              '<html><title>All Filters</title><body><a href="1DEdgeDetection/ScanSingleEdge.html">inScanPath</a>'
+              " list of every filter, long enough to be indexed if it were not skipped</body></html>")
+        write(os.path.join(pages, "1DEdgeDetection", "ScanSingleEdge.html"),
+              "<html><head><title>ScanSingleEdge (ScanEdges Single) - Aurora Vision</title></head><body>"
+              '<ul id="main-navigation"><li><a>Machine Vision Guide</a></li></ul>'
+              "<h1>ScanSingleEdge (ScanEdges Single)</h1><table>\n<tr>\n<td><img alt='in'/></td>\n<td>inScanPath</td>\n"
+              "<td>Path</td>\n<td>Path along which the scan is performed</td>\n</tr>\n<tr>\n<td></td><td>inScanWidth</td>"
+              "<td>Integer</td><td>1 - </td><td>Width of the scan field in pixels</td></tr></table>"
+              "<p>This article is valid for version 9.9.1</p></body></html>")
+        text = avs_mcp.docs.search("inScanPath ScanSingleEdge", doc, None)   # new source folder -> index rebuilt
+        self.assertRegex(text, r"\[\d+\] Studio filter \| ScanSingleEdge \(ScanEdges Single\) \(1DEdgeDetection")
+        self.assertNotIn("All Filters", text)
+        doc_id = int(re.search(r"\[(\d+)\] Studio filter", text).group(1))
+        body, _ = avs_mcp.docs.read(doc_id, doc, None)
+        self.assertIn("inScanPath | Path | Path along which the scan is performed |", body)  # one row per line
+        self.assertNotIn("Machine Vision Guide", body)                                    # site menu dropped
+        self.assertNotIn("valid for version", body)
+        self.assertNotIn("- Aurora Vision", body)                                         # <head> title dropped
+        os.makedirs(os.path.join(doc, "functions", "1DEdgeDetection"))
+        write(os.path.join(doc, "functions", "1DEdgeDetection", "ScanSingleEdge.html"),
+              "<html><body><p>Locates the strongest edge (C++).</p></body></html>")
+        with unittest.mock.patch.object(avs_mcp, "FUNC_DIR", os.path.join(doc, "functions")), \
+                unittest.mock.patch.object(avs_mcp, "_index", None):
+            page = avs_mcp.filter_doc("ScanSingleEdge")
+        self.assertTrue(page.startswith("Studio Filter Reference (1DEdgeDetection"))
+        self.assertIn("inScanWidth | Integer | 1 - | Width of the scan field", page)
+        self.assertIn("AVL library function", page)                                      # C++ page appended
+        self.assertIn("strongest edge", page)
+
 
 PROGRAM = """//:USETYPE WORKERTASK
 public Main()

@@ -131,6 +131,14 @@ def search_filters(query, limit=30):
 
 
 def filter_doc(name):
+    studio = docs.studio_filter_page(name) if name else None
+    if studio:                                  # Studio port names; the AVL page adds C++ defaults
+        _, text = docs.html_text(studio)
+        out = f"Studio Filter Reference ({os.path.relpath(studio, docs.studio_filters_dir())}):\n\n{text}"
+        avl = doc_index().get(name) if os.path.isdir(FUNC_DIR) else None
+        if avl:
+            out += "\n\n---- AVL library function (C++ parameter names, defaults) ----\n\n" + page_text(avl[0])
+        return out
     idx = doc_index()
     if name in idx:
         return page_text(idx[name][0])
@@ -361,14 +369,17 @@ TOOLS = [
      "description": "Search Aurora Vision filters/functions by keyword (name, category, description), e.g. 'fit segment', 'threshold rgb'.",
      "inputSchema": obj({"query": S, "limit": {"type": "integer", "default": 30}}, ["query"])},
     {"name": "avs_filter_doc",
-     "description": "Full documentation of one filter or data type: syntax, parameters, defaults, description, possible errors.",
+     "description": "Full documentation of one filter or data type: syntax, parameters, defaults, description, possible errors. "
+                    "When the Studio Filter Reference was downloaded (filters_fetch.py), shows its Studio port table "
+                    "first, then the AVL C++ page.",
      "inputSchema": obj({"name": S}, ["name"])},
     {"name": "avs_docs_search",
      "description": "Full-text (BM25) search over all Aurora Vision documentation on this machine: AVL functions and data "
                     "types, Machine Vision Guide, technical issues, Deep Learning docs, and the Studio manual (formulas, "
-                    "data types, Optional/Conditional, project files, HMI...) once converted with docs_ingest.py. Use it "
+                    "data types, Optional/Conditional, project files, HMI...) once converted with docs_ingest.py, and "
+                    "the Studio Filter Reference (Studio port names) once downloaded with filters_fetch.py. Use it "
                     "before guessing syntax or what a parameter means; returns ids for avs_docs_read. source filters by "
-                    "label, e.g. 'Studio', 'function', 'Deep Learning'.",
+                    "label, e.g. 'Studio filter', 'Studio', 'function', 'Deep Learning'.",
      "inputSchema": obj({"query": S, "limit": {"type": "integer", "default": 8}, "source": S}, ["query"])},
     {"name": "avs_docs_read",
      "description": "Full text of one section found by avs_docs_search (by id), in pages of `length` characters.",
