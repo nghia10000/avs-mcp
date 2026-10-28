@@ -8,11 +8,12 @@ interrupted run can be restarted. Standard library only.
 """
 
 import argparse
+import http.client
 import os
 import re
 import sys
 import time
-import urllib.request
+import urllib.parse
 
 from docs import CACHE
 
@@ -20,10 +21,29 @@ BASE = "https://docs.adaptive-vision.com/studio/filters/"
 AGENT = "avs-mcp docs fetcher (personal offline index; sequential, rate-limited)"
 
 
+_conn = None
+
+
 def get(url):
-    req = urllib.request.Request(url, headers={"User-Agent": AGENT})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return r.read()
+    """GET over one kept-alive HTTPS connection (reconnects once if the server closed it)."""
+    global _conn
+    u = urllib.parse.urlsplit(url)
+    for attempt in (0, 1):
+        if _conn is None:
+            _conn = http.client.HTTPSConnection(u.netloc, timeout=60)
+        try:
+            _conn.request("GET", u.path, headers={"User-Agent": AGENT})
+            r = _conn.getresponse()
+            data = r.read()
+        except (OSError, http.client.HTTPException):
+            _conn.close()
+            _conn = None
+            if attempt:
+                raise
+            continue
+        if r.status != 200:
+            raise OSError(f"HTTP {r.status}")
+        return data
 
 
 def main():
@@ -48,7 +68,7 @@ def main():
         time.sleep(a.delay)
         try:
             data = get(BASE + rel)
-        except OSError as e:
+        except (OSError, http.client.HTTPException) as e:
             failed += 1
             print(f"[{i}/{len(pages)}] {rel}: {e}", file=sys.stderr, flush=True)
             continue
