@@ -5,6 +5,8 @@ Python standard library only (3.11+). Tools:
   avs_filter_doc      syntax, parameters and description of one filter or data type
   avs_search_examples how a filter / formula is written in the official .avcode examples
   avs_filter_ports    real Studio port names of a filter (+ sample values), mined from the official examples
+  avs_hmi_controls    HMI (.avhmi) control types, properties and bindings, mined from the official examples
+  avs_hmi_check       every HMI binding of a project points at an existing program value
   avs_validate        load a project with AuroraVisionAvexeGenerator.exe (no GUI) and report errors
   avs_run             run a project headlessly with Aurora Vision Runtime (+ evaluate a task)
   avs_open            open a project in Aurora Vision Studio
@@ -35,6 +37,7 @@ import task_spec  # noqa: E402
 import annotate  # noqa: E402
 import docs  # noqa: E402
 import ports  # noqa: E402
+import hmi  # noqa: E402
 from annotate import annotate_tool  # noqa: E402
 from evaluate import evaluate, split  # noqa: E402
 
@@ -396,6 +399,20 @@ TOOLS = [
                     "gives C++ parameter names that often differ from Studio ports; use this before writing a filter "
                     "call. Filters never used in the examples are not covered (close names are suggested).",
      "inputSchema": obj({"name": S}, ["name"])},
+    {"name": "avs_hmi_controls",
+     "description": "HMI (.avhmi, WinForms-like XML) controls used in the official examples: with an empty name the list "
+                    "of control types (Label, VideoBox, PassFailIndicator, ImpulseButton, NumericUpDown...) and what they "
+                    "bind; with a name its properties, sample values, containers and a smallest real example, plus how "
+                    "Input/Output bindings connect to the .avcode (con_... of a macro, extern ext_con_... globals).",
+     "inputSchema": obj({"name": S}, [])},
+    {"name": "avs_hmi_check",
+     "description": "Check the HMI of an .avproj: every Input binding names a macro and a connection that exist, every "
+                    "Output binding an extern ext_con_ global that a filter input uses, every Event handler macro "
+                    "exists, control names are unique. Also warns about overlapping controls, controls outside their "
+                    "container and Bottom-anchored controls that slide onto Top-anchored ones when Studio shows the "
+                    "HMI shorter than its ClientSize. avs_validate does not check bindings; run this after editing "
+                    "an .avhmi or renaming connections.",
+     "inputSchema": obj({"project": S}, ["project"])},
     {"name": "avs_validate",
      "description": "Load an .avproj with AuroraVisionAvexeGenerator (no GUI) and report errors. Use after every .avcode edit.",
      "inputSchema": obj({"project": S}, ["project"])},
@@ -452,6 +469,10 @@ def call_tool(name, a):
         return search_examples(a.get("query", ""), int(a.get("limit", 5))), False
     if name == "avs_filter_ports":
         return ports.filter_ports(a.get("name", ""), EXAMPLES_DIR)
+    if name == "avs_hmi_controls":
+        return hmi.hmi_controls(a.get("name", ""), EXAMPLES_DIR)
+    if name == "avs_hmi_check":
+        return hmi.hmi_check(a.get("project", ""), EXAMPLES_DIR)
     if name == "avs_validate":
         return validate(a.get("project", ""))
     if name == "avs_run":

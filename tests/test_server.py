@@ -574,6 +574,167 @@ class FilterPorts(unittest.TestCase):
         self.assertTrue(avs_mcp.ports.filter_ports("X", os.path.join(self.dir, "none"))[1])
 
 
+HMI_CODE = """extern public Integer ext_con_00000000_0000_4000_8000_000000000001 = 10
+
+public Main()
+{
+	ThresholdToRegion
+	(
+		inMaxValue: ext_con_00000000_0000_4000_8000_000000000001
+		outRegion: con_00000000_0000_4000_8000_000000000002
+	)
+}
+
+//:USETYPE EVENTHANDLER
+public OnClick() step
+{
+}
+"""
+
+HMI_XML = """<HMI RelativeDPI="1">
+  <ClientSize>400, 300</ClientSize>
+  <Controls>
+    <GroupBox>
+      <Location>4, 4</Location>
+      <Name>groupBox1</Name>
+      <Size>300, 200</Size>
+      <TabIndex>0</TabIndex>
+      <Text>Result</Text>
+      <Controls>
+        <Label>
+          <Location>4, 20</Location>
+          <Name>label1</Name>
+          <Size>100, 23</Size>
+          <TabIndex>0</TabIndex>
+          <Text>-</Text>
+          <Binding>
+            <Input Property="Text" Macro="Main" Variable="con_00000000_0000_4000_8000_000000000002" VariantIndex="0" />
+          </Binding>
+        </Label>
+        <NumericUpDown>
+          <Location>4, 50</Location>
+          <Maximum>255</Maximum>
+          <Name>numericUpDown1</Name>
+          <Size>100, 23</Size>
+          <TabIndex>1</TabIndex>
+          <Binding>
+            <Output Property="Value" Variable="ext_con_00000000_0000_4000_8000_000000000001" />
+          </Binding>
+        </NumericUpDown>
+        <ImpulseButton>
+          <Location>4, 80</Location>
+          <Name>button1</Name>
+          <Size>100, 23</Size>
+          <TabIndex>2</TabIndex>
+          <Binding>
+            <Event Name="Click" Handler="OnClick" />
+          </Binding>
+        </ImpulseButton>
+      </Controls>
+    </GroupBox>
+  </Controls>
+</HMI>
+"""
+
+
+class Hmi(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.dir, "Examples", "Demo"))
+        write(os.path.join(self.dir, "Examples", "Demo", "demo.avhmi"), HMI_XML)
+        self.proj = os.path.join(self.dir, "app.avproj")
+        write(self.proj, '<AuroraVisionProject Name="app"><Files><Program Path="app.avcode" />'
+                         '<HMI Path="app.avhmi" /></Files></AuroraVisionProject>')
+        write(os.path.join(self.dir, "app.avcode"), HMI_CODE)
+        write(os.path.join(self.dir, "app.avhmi"), HMI_XML)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def test_catalog(self):
+        text, err = avs_mcp.hmi.hmi_controls("", self.dir)
+        self.assertFalse(err, text)
+        self.assertIn("NumericUpDown", text)
+        self.assertIn("Input Text", text)
+        text, err = avs_mcp.hmi.hmi_controls("numericupdown", self.dir)              # case-insensitive
+        self.assertFalse(err, text)
+        self.assertIn("inside: GroupBox", text)                                      # nested in a container
+        self.assertIn("Maximum", text)
+        self.assertIn("<NumericUpDown>", text)                                       # real example snippet
+        self.assertIn("Event Click", avs_mcp.hmi.hmi_controls("ImpulseButton", self.dir)[0])
+        self.assertTrue(avs_mcp.hmi.hmi_controls("NumericUpDwn", self.dir)[1])
+
+    def test_check_ok(self):
+        text, err = avs_mcp.hmi.hmi_check(self.proj)
+        self.assertFalse(err, text)
+        self.assertIn("3 binding(s)", text)
+
+    def test_check_problems(self):
+        bad = (HMI_XML.replace("000000000002", "0000000000ff")                       # not a connection of Main
+               .replace('Handler="OnClick"', 'Handler="Nope"')
+               .replace("<Name>button1</Name>", "<Name>label1</Name>"))
+        write(os.path.join(self.dir, "app.avhmi"), bad)
+        write(os.path.join(self.dir, "app.avcode"), HMI_CODE.replace("inMaxValue: ext_con", "inMaxValue: 5 //"))
+        text, err = avs_mcp.hmi.hmi_check(self.proj)
+        self.assertTrue(err)
+        self.assertIn("0000000000ff is not a connection of macro Main", text)
+        self.assertIn("declared but no filter input uses it", text)
+        self.assertIn("handler macro 'Nope'", text)
+        self.assertIn("'label1' used 2 times", text)
+
+    def test_layout_warnings(self):
+        bottom = ("    <ProgramControlBox>\n      <Anchor>Bottom, Left</Anchor>\n      <Location>4, 230</Location>\n"
+                  "      <Name>box1</Name>\n      <Size>200, 60</Size>\n      <TabIndex>9</TabIndex>\n"
+                  "    </ProgramControlBox>\n    <Label>\n      <Location>350, 4</Location>\n      <Name>far</Name>\n"
+                  "      <Size>100, 23</Size>\n      <TabIndex>8</TabIndex>\n    </Label>\n  </Controls>\n</HMI>")
+        write(os.path.join(self.dir, "app.avhmi"), HMI_XML.replace("  </Controls>\n</HMI>", bottom))
+        text, err = avs_mcp.hmi.hmi_check(self.proj)
+        self.assertFalse(err, text)                                                  # warnings, not errors
+        self.assertIn("Bottom-anchored ProgramControlBox 'box1' is below Top-anchored GroupBox 'groupBox1'", text)
+        self.assertIn("less than 274 px high", text)                                 # 300 - (230 - 204)
+        self.assertIn("Label 'far' (350,4 100x23) reaches outside HMI (400x300)", text)
+        write(os.path.join(self.dir, "app.avhmi"), HMI_XML.replace("<Location>4, 50</Location>",
+                                                                   "<Location>4, 30</Location>"))
+        self.assertIn("Label 'label1' overlaps NumericUpDown 'numericUpDown1' in GroupBox 'groupBox1'",
+                      avs_mcp.hmi.hmi_check(self.proj)[0])
+
+    def test_property_and_width_warnings(self):
+        write(os.path.join(self.dir, "hmi_controls.json"), json.dumps({"controls": {"ImpulseButton": {
+            "assembly": "HMI.Runtime.dll", "base": "Button", "public": True, "properties": [
+                {"name": "Text", "type": "String", "hmi": True, "port": True, "default": "",
+                 "description": "Caption.", "values": ""}]}}}))
+        xml = (HMI_XML.replace("<Name>button1</Name>", "<Name>button1</Name>\n          <BackColor>Red</BackColor>")
+               .replace("<Location>4, 80</Location>", "<Anchor>Top, Right</Anchor>\n          <Location>150, 20</Location>"))
+        write(os.path.join(self.dir, "app.avhmi"), xml)
+        with unittest.mock.patch.object(avs_mcp.hmi, "CACHE", self.dir):
+            text, err = avs_mcp.hmi.hmi_check(self.proj, os.path.join(self.dir, "Examples"))
+            self.assertIn("Caption.", avs_mcp.hmi.hmi_controls("ImpulseButton", self.dir)[0])   # real API shown
+        self.assertFalse(err, text)
+        self.assertIn("ImpulseButton 'button1' sets BackColor: not an AVS property", text)
+        self.assertIn("Right-anchored ImpulseButton 'button1' is right of Left-anchored Label 'label1'", text)
+        self.assertIn("px wide (designed 300)", text)
+
+    def test_no_hmi(self):
+        write(self.proj, '<AuroraVisionProject><Files><Program Path="app.avcode" /></Files></AuroraVisionProject>')
+        self.assertTrue(avs_mcp.hmi.hmi_check(self.proj)[1])
+
+
+@unittest.skipUnless(os.path.isdir(avs_mcp.EXAMPLES_DIR), "Aurora Vision Studio examples not installed")
+class InstalledHmi(unittest.TestCase):
+    def test_examples_pass_check(self):
+        import glob
+        projects = []
+        for p in glob.glob(os.path.join(avs_mcp.EXAMPLES_DIR, "**", "*.avproj"), recursive=True):
+            with open(p, encoding="utf-8-sig") as f:
+                if "<HMI " in f.read():
+                    projects.append(p)
+        self.assertTrue(projects)
+        for p in projects:
+            text, err = call("avs_hmi_check", project=p)
+            self.assertFalse(err, f"{p}: {text}")
+        self.assertIn("PassFailIndicator", call("avs_hmi_controls")[0])
+
+
 @unittest.skipUnless(os.path.isdir(avs_mcp.EXAMPLES_DIR), "Aurora Vision Studio examples not installed")
 class InstalledPorts(unittest.TestCase):
     def test_scan_single_edge(self):

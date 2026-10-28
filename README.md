@@ -41,6 +41,8 @@ Install paths are detected under `C:\Program Files\Aurora Vision`; override with
 | `avs_docs_search` / `avs_docs_read` | Full-text (BM25) search over all docs on this machine — AVL functions and data types, Machine Vision Guide, Deep Learning, and the **Studio manual** (formulas, Optional/Conditional, project files…) after `python docs_ingest.py all_chapters.pdf` (needs `pypdf` once; the PDF comes from docs.adaptive-vision.com and is not shipped), and the **Studio Filter Reference** (source `Studio filter`) after `python filters_fetch.py` |
 | `avs_search_examples` | How a filter / formula is actually written in the official `.avcode` examples |
 | `avs_filter_ports` | Real **Studio** port names of a filter (e.g. `ScanSingleEdge` → `inScanPath`, `outEdge.Point`), mined from every call in the official examples: in/out/diag, how often listed or hidden, sample values, file:line. The AVL docs give C++ parameter names, which often differ; filters never used in the examples are not covered |
+| `avs_hmi_controls` | HMI (`.avhmi`, WinForms-like XML) control types used in the official examples — `Label`, `VideoBox`, `PassFailIndicator`, `ImpulseButton`, `NumericUpDown`… — with properties, sample values, containers, a smallest real example and how bindings connect to the program |
+| `avs_hmi_check` | Every HMI binding of a project points at something that exists: `Input` → a connection of the named macro, `Output` → an `extern public` global used by a filter input, `Event` → a handler macro; unique control names. `avs_validate` does **not** check this (a broken binding still exports) |
 | `avs_validate` | Load an `.avproj` with `AuroraVisionAvexeGenerator.exe` (no GUI) and report errors |
 | `avs_run` | Run a project headlessly with the Runtime (`AuroraVisionConsole.exe`); with `task_dir` it clears the results CSV and evaluates afterwards |
 | `avs_open` | Open a project in Studio so you can press Run |
@@ -67,6 +69,30 @@ Pages go to `../avs_docs_cache/studio_filters` (or `$AVS_DOCS_CACHE/studio_filte
 Zebra's content and are not shipped. The search index is rebuilt automatically on the next `avs_docs_search`. The
 pages describe the current online version (5.7.x at the time of writing), which can differ slightly from an older
 installed Studio.
+
+### HMI and communication
+
+An `.avhmi` file is listed in the project as `<HMI Path="x.avhmi" />`. A control shows a program value with
+`<Input Property="Image" Macro="Main" Variable="con_..." VariantIndex="0" />` and sends a value to the program with
+`<Output Property="Value" Variable="ext_con_..." />`, where `ext_con_...` is declared in the `.avcode` as
+`extern public Integer ext_con_... = 10` and connected to a filter input. A production-style program splits `Main`
+into `section INITIALIZE:` (models, connections), `section PROCESS:` (one iteration per image) and
+`section FINALIZE:` (close connections) under `//:USETYPE WORKERTASK`.
+
+The real property list of every HMI control comes from the installed `HMI.Runtime.dll` / `HMI.Controls.dll`:
+`powershell -ExecutionPolicy Bypass -File hmi_reflect.ps1` reads their public .NET metadata once (no decompiling)
+into `<cache>/hmi_controls.json` — the properties marked `HMIBrowsable` (shown by the HMI designer), which of them
+are program ports, descriptions, defaults and enum values. `avs_hmi_controls` shows them next to what the examples
+write, and `avs_hmi_check` warns about properties that are neither (e.g. `BackColor` on `ProgramControlBox`, which
+Studio ignores) and about anchor traps: a control anchored only Right (Bottom) next to one anchored Left (Top) slides
+onto it when Studio shows the HMI smaller than its `ClientSize`.
+
+`fake_plc.py` stands in for a PLC: a TCP server that prints and logs every line the vision program sends, so the
+communication can be tested with `avs_run` and no machine:
+
+```bash
+python fake_plc.py --port 5000 --lines 8 --log plc_log.txt
+```
 
 ## Task spec
 
@@ -126,7 +152,8 @@ Notes on `avs_run`: the `.avexe` is built next to the project because relative p
 ## Limitations / roadmap
 
 - [x] `avs_run` — headless run with Aurora Vision Studio Runtime.
-- [ ] Programs that wait for a camera, PLC or HMI input never finish under `avs_run`; use image folders (`EnumerateImages`, `inRepeat = False`) for testing.
+- [ ] Programs that wait for a camera or an HMI button never finish under `avs_run`; use image folders (`EnumerateImages`, `inRepeat = False`) for testing. TCP output can be tested against `fake_plc.py`.
+- [ ] PLC protocols beyond plain TCP text (Mitsubishi MC, Modbus TCP, S7…), and a fake PLC for each.
 - [x] Local annotation UI that writes the task folder (`avs_annotate`).
 - [ ] Deep Learning helpers: export preprocessed training images, read model results.
 - [ ] Studio 5.5 / 5.7 testing, Runtime-only installs.
@@ -156,4 +183,6 @@ MCP server giúp trợ lý AI viết và kiểm tra chương trình **Aurora Vis
 - Nếu ứng dụng chat hỗ trợ MCP Apps, trang đánh dấu hiện ngay trong khung chat; nếu không thì mở trên trình duyệt như cũ.
 - Đánh dấu ảnh: `avs_annotate` mở trang web cục bộ — chọn OK/NG cho từng ảnh, khoanh lỗi (hộp, đa giác, đường, tròn, điểm) kèm loại lỗi và mô tả, kéo mức Black/White để thấy lỗi mờ. Lưu ra `annotations.json`, `expected.csv` và `annotated/*.png` để trợ lý xem đúng chỗ bạn khoanh.
 - Chấm điểm: đáp án là của người (QC đánh OK/NG, số đo thước cặp/CMM, lỗi khoanh bằng `avs_annotate`). `avs_evaluate` ngoài đúng/sai còn báo **khoảng cách an toàn** (ảnh NG cách khoảng giá trị của ảnh OK bao xa, ảnh nào sát ngưỡng) và chấm riêng **ảnh để dành** (`avs_split` chia ảnh dùng để chỉnh / ảnh để kiểm tra).
-- Chưa có: hỗ trợ Deep Learning — xem roadmap.
+- Giao diện HMI (`.avhmi`, giống WinForms): `avs_hmi_controls` tra các control có trong ví dụ chính hãng và cách binding; `avs_hmi_check` kiểm tra mọi binding trỏ đúng giá trị của chương trình (validator của AVS không kiểm tra cái này).
+- Truyền thông: `fake_plc.py` giả lập PLC (TCP server ghi lại mọi dòng nhận được) để thử chương trình gửi kết quả mà không cần máy thật.
+- Chưa có: hỗ trợ Deep Learning, giao thức PLC riêng (MC Mitsubishi, Modbus…) — xem roadmap.
