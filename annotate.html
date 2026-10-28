@@ -131,7 +131,8 @@
   <h2>Keys</h2>
   <div class="hint">
     <kbd>V</kbd> select · <kbd>R</kbd> rect · <kbd>P</kbd> polygon · <kbd>L</kbd> line · <kbd>C</kbd> circle · <kbd>T</kbd> point<br>
-    <kbd>O</kbd>/<kbd>N</kbd> OK/NG · <kbd>←</kbd>/<kbd>→</kbd> image · <kbd>Del</kbd> delete · <kbd>Esc</kbd> cancel<br>
+    <kbd>O</kbd>/<kbd>N</kbd> OK/NG · <kbd>←</kbd>/<kbd>→</kbd> image · <kbd>Del</kbd> delete · <kbd>Esc</kbd> deselect<br>
+    selected shape: drag inside = move, drag a handle or a circle's rim = resize, arrows = nudge 1 px (<kbd>Shift</kbd> 10 px)<br>
     wheel zoom · right-drag or <kbd>Space</kbd>+drag pan · <kbd>Ctrl</kbd>+<kbd>S</kbd> save
   </div>
 </aside>
@@ -429,11 +430,15 @@ function distSeg(p, a, b) {
   const t = L ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L)) : 0;
   return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
 }
+const onRim = (sh, p, tol) => sh.kind === "circle" &&
+  Math.abs(Math.hypot(p[0] - sh.points[0][0], p[1] - sh.points[0][1]) -
+           Math.hypot(sh.points[1][0] - sh.points[0][0], sh.points[1][1] - sh.points[0][1])) < tol;
 function hit(p) {
   const tol = 6 / view.s, L = list();
-  if (sel >= 0) {                                    // vertex of the selected shape first
+  if (sel >= 0 && L[sel]) {                          // handles of the selected shape first
     const v = L[sel].points.findIndex(q => Math.hypot(q[0] - p[0], q[1] - p[1]) < tol);
     if (v >= 0) return { i: sel, v };
+    if (onRim(L[sel], p, tol)) return { i: sel, rim: true };   // anywhere on a circle's rim resizes it
   }
   for (let i = L.length - 1; i >= 0; i--) {
     const sh = L[i], pt = sh.points;
@@ -462,8 +467,14 @@ cv.addEventListener("mousedown", e => {
   if (tool === "select") {
     const h = hit(p);
     sel = h ? h.i : -1;
-    if (h) drag = { i: h.i, v: h.v, last: p };
+    if (h) drag = { i: h.i, v: h.v, rim: h.rim, last: p };
     renderSide(); draw(); return;
+  }
+  // With a drawing tool, the selected shape stays editable: drag inside to move it, drag a handle (or a circle's
+  // rim) to resize it. Pressing anywhere else draws a new shape, also inside other shapes (concentric circles).
+  if (!drawing && sel >= 0) {
+    const h = hit(p);
+    if (h && h.i === sel) { drag = { i: h.i, v: h.v, rim: h.rim, last: p }; return; }
   }
   if (tool === "polygon") {
     if (!drawing) drawing = { kind: "polygon", points: [p, p], open: true };
@@ -488,6 +499,7 @@ window.addEventListener("mousemove", e => {
   if (drag.creating) { drawing.points[1] = clampPt(p); draw(); return; }
   const sh = list()[drag.i], q = clampPt(p);
   if (drag.v !== undefined) sh.points[drag.v] = round(q);
+  else if (drag.rim) sh.points[1] = round(q);         // circle: the edge point follows the mouse, radius changes
   else { const dx = q[0] - drag.last[0], dy = q[1] - drag.last[1]; sh.points = sh.points.map(r => round([r[0] + dx, r[1] + dy])); drag.last = q; }
   drag.moved = true; draw();
 });
@@ -692,8 +704,16 @@ window.addEventListener("keydown", e => {
   else if (k === "f") fit();
   else if (e.key === "Enter") finishPolygon();
   else if (e.key === "Delete" || e.key === "Backspace") deleteSel();
-  else if (e.key === "ArrowLeft") step(-1);
-  else if (e.key === "ArrowRight") step(1);
+  else if (e.key.startsWith("Arrow") && sel >= 0 && list()[sel]) {   // nudge the selected shape, 1 px (Shift: 10)
+    e.preventDefault();
+    const d = e.shiftKey ? 10 : 1;
+    const [dx, dy] = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d] }[e.key];
+    const sh = list()[sel];
+    sh.points = sh.points.map(r => round(clampPt([r[0] + dx, r[1] + dy])));
+    setDirty(); draw();
+  }
+  else if (e.key === "ArrowLeft" || e.key === "PageUp") step(-1);
+  else if (e.key === "ArrowRight" || e.key === "PageDown") step(1);
 });
 window.addEventListener("keyup", e => { if (e.key === " ") { spaceDown = false; setTool(tool); } });
 window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });

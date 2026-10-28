@@ -330,6 +330,10 @@ Task folder: {task_dir}
 6. Build the program so it appends one row per image to output.results_csv (SaveText, CreateOrAppend), using the key column and the step columns; look up filters with avs_search_filters / avs_filter_doc and real .avcode syntax with avs_search_examples; check it with avs_validate.
    Also write the measured values the decision is based on (gap brightness, areas, distances...) as extra numeric columns:
    avs_evaluate then reports how far each NG image is from the OK range.
+   Ship a <Project>.avview listed in the .avproj (<View Path="..."/>) with the key outputs already placed — input/result
+   image with the overlays that explain it (regions, located points, coordinate system, aligned fitting fields, fitted
+   shapes) and a TextView with the per-image result — and name them with //:LABELDATASOURCE, so pressing Run in Studio
+   shows the images at once instead of the user dragging outputs into views.
 7. Run it with avs_run (project + task_dir): it executes headlessly and evaluates the results. Fix the program and repeat until avs_evaluate passes; if the Runtime is not installed, ask the user to press Run (avs_open) and then call avs_evaluate.
 8. Passing is not enough: report the margins to the user. NG images close to the OK range, or NG images no measured value
    separates, need more samples or the user's judgement — ask instead of moving a threshold to fit them.
