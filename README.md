@@ -38,6 +38,7 @@ Install paths are detected under `C:\Program Files\Aurora Vision`; override with
 |---|---|
 | `avs_search_filters` | Search filters by keyword in the installed AVL documentation |
 | `avs_filter_doc` | Syntax, parameters, defaults and errors of one filter or data type |
+| `avs_docs_search` / `avs_docs_read` | Full-text (BM25) search over all docs on this machine — AVL functions and data types, Machine Vision Guide, Deep Learning, and the **Studio manual** (formulas, Optional/Conditional, project files…) after `python docs_ingest.py all_chapters.pdf` (needs `pypdf` once; the PDF comes from docs.adaptive-vision.com and is not shipped) |
 | `avs_search_examples` | How a filter / formula is actually written in the official `.avcode` examples |
 | `avs_validate` | Load an `.avproj` with `AuroraVisionAvexeGenerator.exe` (no GUI) and report errors |
 | `avs_run` | Run a project headlessly with the Runtime (`AuroraVisionConsole.exe`); with `task_dir` it clears the results CSV and evaluates afterwards |

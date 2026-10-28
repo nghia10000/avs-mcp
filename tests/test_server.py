@@ -413,6 +413,37 @@ class McpApp(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.dir, ".removed", "c.png")))
 
 
+class Docs(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.saved = (avs_mcp.docs.CACHE, avs_mcp.docs._index)
+        avs_mcp.docs.CACHE, avs_mcp.docs._index = os.path.join(self.dir, "cache"), None
+        os.makedirs(os.path.join(self.dir, "cache"))
+        os.makedirs(os.path.join(self.dir, "doc", "functions"))
+        write(os.path.join(self.dir, "doc", "functions", "ScanSingleEdge.html"),
+              "<html><title>ScanSingleEdge</title><body><p>Locates the strongest edge along a scan path.</p></body></html>")
+        with open(os.path.join(self.dir, "cache", "studio_9.9_sections.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"title": "Coalescing operator", "path": "Formulas > Coalescing operator", "page": 7,
+                                "text": "Coalescing operator: a ?? b returns b when a is Nil (an optional value)."}) + "\n")
+
+    def tearDown(self):
+        avs_mcp.docs.CACHE, avs_mcp.docs._index = self.saved
+        shutil.rmtree(self.dir)
+
+    def test_search_and_read(self):
+        doc = os.path.join(self.dir, "doc")
+        text = avs_mcp.docs.search("nil optional coalescing", doc, None)
+        self.assertIn("Studio 9.9 manual | Formulas > Coalescing operator (page 7)", text)
+        self.assertIn("scan single edge", " ".join(avs_mcp.docs.tokens("ScanSingleEdge")))   # camel case split
+        self.assertIn("ScanSingleEdge", avs_mcp.docs.search("strongest edge", doc, None, source="function"))
+        doc_id = int(re.search(r"\[(\d+)\] Studio", text).group(1))
+        body, err = avs_mcp.docs.read(doc_id, doc, None)
+        self.assertFalse(err)
+        self.assertIn("a ?? b returns b", body)
+        self.assertTrue(avs_mcp.docs.read(99, doc, None)[1])
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "cache", "docs_index.json")))   # cached for next start
+
+
 @unittest.skipUnless(os.path.isdir(avs_mcp.FUNC_DIR), "Aurora Vision Library documentation not installed")
 class Installed(unittest.TestCase):
     def test_search_and_doc(self):

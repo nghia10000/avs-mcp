@@ -32,6 +32,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import task_spec  # noqa: E402
 import annotate  # noqa: E402
+import docs  # noqa: E402
 from annotate import annotate_tool  # noqa: E402
 from evaluate import evaluate, split  # noqa: E402
 
@@ -53,6 +54,7 @@ FUNC_DIR = os.path.join(DOC_DIR, "functions")
 TYPE_DIR = os.path.join(DOC_DIR, "datatypes")
 EXAMPLES_DIR = os.environ.get("AVS_EXAMPLES_DIR") or os.path.join(
     r"C:\ProgramData\Aurora Vision", os.path.basename(AVS_DIR))
+DL_DOC_DIR = os.environ.get("AVS_DL_DOC_DIR") or os.path.join(latest("Aurora Deep Learning 5.*"), "Documentation")
 
 # ------------------------------------------------------------------ documentation
 
@@ -359,6 +361,17 @@ TOOLS = [
     {"name": "avs_filter_doc",
      "description": "Full documentation of one filter or data type: syntax, parameters, defaults, description, possible errors.",
      "inputSchema": obj({"name": S}, ["name"])},
+    {"name": "avs_docs_search",
+     "description": "Full-text (BM25) search over all Aurora Vision documentation on this machine: AVL functions and data "
+                    "types, Machine Vision Guide, technical issues, Deep Learning docs, and the Studio manual (formulas, "
+                    "data types, Optional/Conditional, project files, HMI...) once converted with docs_ingest.py. Use it "
+                    "before guessing syntax or what a parameter means; returns ids for avs_docs_read. source filters by "
+                    "label, e.g. 'Studio', 'function', 'Deep Learning'.",
+     "inputSchema": obj({"query": S, "limit": {"type": "integer", "default": 8}, "source": S}, ["query"])},
+    {"name": "avs_docs_read",
+     "description": "Full text of one section found by avs_docs_search (by id), in pages of `length` characters.",
+     "inputSchema": obj({"id": {"type": "integer"}, "offset": {"type": "integer", "default": 0},
+                         "length": {"type": "integer", "default": 6000}}, ["id"])},
     {"name": "avs_search_examples",
      "description": "Search the official .avcode Examples/Tutorials installed with Studio for a filter, formula function or syntax "
                     "(e.g. 'SaveText', 'toString', 'FitCircleToEdges') and show how it is written.",
@@ -411,6 +424,10 @@ def call_tool(name, a):
         return search_filters(a.get("query", ""), int(a.get("limit", 30))), False
     if name == "avs_filter_doc":
         return filter_doc(a.get("name", "")), False
+    if name == "avs_docs_search":
+        return docs.search(a.get("query", ""), DOC_DIR, DL_DOC_DIR, int(a.get("limit", 8)), a.get("source", "")), False
+    if name == "avs_docs_read":
+        return docs.read(int(a.get("id", -1)), DOC_DIR, DL_DOC_DIR, int(a.get("offset", 0)), int(a.get("length", 6000)))
     if name == "avs_search_examples":
         return search_examples(a.get("query", ""), int(a.get("limit", 5))), False
     if name == "avs_validate":
