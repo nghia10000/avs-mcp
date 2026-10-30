@@ -79,6 +79,10 @@ class Spec(unittest.TestCase):
         self.assertIn("still TODO", text)
         self.assertIn("no images", text)
         self.assertNotIn("'name' still TODO", text)
+        self.assertIn("no ground truth", text)
+        write(os.path.join(self.dir, "expected.csv"), "image,result\n")             # [expected] file left commented out
+        text, _ = call("avs_task_check", task_dir=self.dir)
+        self.assertNotIn("no ground truth", text)                                    # found like avs_evaluate does
 
     def test_unknown_type(self):
         text, err = call("avs_task_new", task_dir=self.dir, step_types=["teleport"])

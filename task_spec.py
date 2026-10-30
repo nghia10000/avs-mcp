@@ -238,6 +238,8 @@ def check_task(task_dir):
     # expected.csv
     key = spec.get("output", {}).get("key", "image")
     exp_file = spec.get("expected", {}).get("file")
+    if (not exp_file or is_todo(exp_file)) and os.path.exists(os.path.join(task_dir, "expected.csv")):
+        exp_file = "expected.csv"            # the default of avs_evaluate / avs_annotate / avs_split
     n_exp = 0
     if exp_file and not is_todo(exp_file):
         exp_path = os.path.join(task_dir, exp_file)
