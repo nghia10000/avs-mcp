@@ -1,7 +1,8 @@
 """avs_mcp.py — MCP server (stdio) connecting an AI assistant to Aurora Vision Studio.
 
 Python standard library only (3.11+). Tools:
-  avs_search_filters  search filters in the AVL documentation installed on this machine
+  avs_search_filters  find Studio filters for a task (filter catalog; AVL documentation without it)
+  avs_filter_info     one Studio filter: purpose, all ports with types/ranges/defaults, a call checked by Studio
   avs_filter_doc      syntax, parameters and description of one filter or data type
   avs_search_examples how a filter / formula is written in the official .avcode examples
   avs_filter_ports    real Studio port names of a filter (+ sample values), mined from the official examples
@@ -37,6 +38,7 @@ import task_spec  # noqa: E402
 import annotate  # noqa: E402
 import docs  # noqa: E402
 import ports  # noqa: E402
+import catalog  # noqa: E402
 import hmi  # noqa: E402
 from annotate import annotate_tool  # noqa: E402
 from evaluate import evaluate, split  # noqa: E402
@@ -115,6 +117,9 @@ def doc_index():
 
 
 def search_filters(query, limit=30):
+    studio = catalog.search(query, limit)            # Studio filter catalog, when built (catalog.py)
+    if studio is not None:
+        return studio
     words = [w.lower() for w in query.split() if w]
     if not words:
         return "Give a keyword."
@@ -215,8 +220,20 @@ def run_project(project, task_dir=None, timeout=600):
 
     results = None
     if task_dir:
+        task_dir = os.path.abspath(task_dir)
+        if not os.path.exists(os.path.join(task_dir, "task.toml")):
+            return f"No task.toml in {task_dir}; give the task folder (avs_task_new) or leave task_dir out.", True
         spec = task_spec.load_task(task_dir)
-        results = os.path.join(task_dir, spec.get("output", {}).get("results_csv", "results.csv"))
+        results = os.path.realpath(os.path.join(task_dir, spec.get("output", {}).get("results_csv", "results.csv")))
+        # task.toml may come from someone else: never delete anything outside the task folder or that is not a CSV
+        if not task_spec.inside(results, task_dir) or not results.lower().endswith(".csv"):
+            return (f"output.results_csv must be a .csv file inside the task folder, got {results}; fix task.toml.",
+                    True)
+        exp_file = spec.get("expected", {}).get("file")
+        exp_file = exp_file if isinstance(exp_file, str) and not task_spec.is_todo(exp_file) else "expected.csv"
+        if os.path.normcase(results) == os.path.normcase(os.path.realpath(os.path.join(task_dir, exp_file))):
+            return (f"output.results_csv is the ground-truth file {exp_file}; the program must write its results "
+                    "to another file (task.toml).", True)
         if os.path.exists(results):
             os.remove(results)                          # programs append; start from an empty file
 
@@ -245,8 +262,9 @@ def run_project(project, task_dir=None, timeout=600):
            "", log or "(no output)", "", "Files written in the project folder: " + (", ".join(changed) or "none")]
     if task_dir and ok:
         if results and os.path.exists(results):
-            text, _ = evaluate(task_dir)
+            text, failed = evaluate(task_dir)
             out += ["", "avs_evaluate:", text]
+            ok = ok and not failed                      # a run whose results FAIL the expected values is an error
         else:
             out += ["", f"Program did not write {results} — check the SaveText path."]
             ok = False
@@ -369,7 +387,9 @@ def obj(props, required):
 S = {"type": "string"}
 TOOLS = [
     {"name": "avs_search_filters",
-     "description": "Search Aurora Vision filters/functions by keyword (name, category, description), e.g. 'fit segment', 'threshold rgb'.",
+     "description": "Find Studio filters for a task by keywords (name, toolbox group, summary, applications, port "
+                    "descriptions), e.g. 'fit circle edges', 'read barcode', 'modbus write register'. Filters missing "
+                    "from the installed Studio are left out. Then use avs_filter_info on the best hit.",
      "inputSchema": obj({"query": S, "limit": {"type": "integer", "default": 30}}, ["query"])},
     {"name": "avs_filter_doc",
      "description": "Full documentation of one filter or data type: syntax, parameters, defaults, description, possible errors. "
@@ -392,6 +412,12 @@ TOOLS = [
      "description": "Search the official .avcode Examples/Tutorials installed with Studio for a filter, formula function or syntax "
                     "(e.g. 'SaveText', 'toString', 'FitCircleToEdges') and show how it is written.",
      "inputSchema": obj({"query": S, "limit": {"type": "integer", "default": 5}}, ["query"])},
+    {"name": "avs_filter_info",
+     "description": "Everything needed to call one Studio filter (any of ~3700): purpose, module, toolbox place, "
+                    "whether it exists in the installed Studio, every port with type, range, default and description, "
+                    "usual values from the official examples, and a ready call whose filter name, port names and "
+                    "default literals were checked by loading them in the installed Studio. Use before writing a call.",
+     "inputSchema": obj({"name": S}, ["name"])},
     {"name": "avs_filter_ports",
      "description": "Real Aurora Vision Studio port names of a filter (e.g. ScanSingleEdge -> inScanPath, outEdge.Point), "
                     "mined from every call in the official .avcode examples: in/out/diag kind, how often each port is "
@@ -467,6 +493,8 @@ def call_tool(name, a):
         return docs.read(int(a.get("id", -1)), DOC_DIR, DL_DOC_DIR, int(a.get("offset", 0)), int(a.get("length", 6000)))
     if name == "avs_search_examples":
         return search_examples(a.get("query", ""), int(a.get("limit", 5))), False
+    if name == "avs_filter_info":
+        return catalog.filter_info(a.get("name", ""), EXAMPLES_DIR)
     if name == "avs_filter_ports":
         return ports.filter_ports(a.get("name", ""), EXAMPLES_DIR)
     if name == "avs_hmi_controls":
@@ -512,17 +540,19 @@ def client_supports_ui(params):
 
 def handle(msg):
     method, mid = msg.get("method"), msg.get("id")
+    params = msg.get("params")
+    params = params if isinstance(params, dict) else {}   # "params": null or a list is treated as no params
     if method == "initialize":
-        ver = msg.get("params", {}).get("protocolVersion", "2025-06-18")
-        CLIENT["ui"] = client_supports_ui(msg.get("params"))
+        ver = params.get("protocolVersion", "2025-06-18")
+        CLIENT["ui"] = client_supports_ui(params)
         result = {"protocolVersion": ver, "capabilities": {"tools": {}, "prompts": {}, "resources": {}},
                   "serverInfo": {"name": "avs", "version": VERSION}}
     elif method == "tools/list":
         # app-only tools serve the in-chat page; hosts without MCP Apps would show them to the model, so hide them there
         result = {"tools": TOOLS + (annotate.APP_TOOLS if CLIENT["ui"] else [])}
     elif method == "tools/call":
-        p = msg.get("params", {})
-        name, args = p.get("name"), p.get("arguments") or {}
+        name, args = params.get("name"), params.get("arguments")
+        args = args if isinstance(args, dict) else {}
         structured = None
         try:
             if name in annotate.APP_TOOL_NAMES:
@@ -538,16 +568,15 @@ def handle(msg):
         result = {"resources": [{"uri": annotate.UI_URI, "name": "avs_annotate_page", "mimeType": annotate.UI_MIME,
                                  "description": "Annotation page: mark images OK/NG and draw defects."}]}
     elif method == "resources/read":
-        uri = (msg.get("params") or {}).get("uri")
+        uri = params.get("uri")
         if uri != annotate.UI_URI:
             return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32002, "message": f"Resource not found: {uri}"}}
         result = {"contents": [annotate.ui_resource()]}
     elif method == "prompts/list":
         result = {"prompts": PROMPTS}
     elif method == "prompts/get":
-        p = msg.get("params", {})
         try:
-            result = get_prompt(p.get("name"), p.get("arguments") or {})
+            result = get_prompt(params.get("name"), params.get("arguments") or {})
         except ValueError as e:
             return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": str(e)}}
     elif method == "ping":
@@ -567,9 +596,17 @@ def main():
         if not line:
             continue
         try:
-            resp = handle(json.loads(line))
-        except Exception as e:
-            resp = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": str(e)}}
+            msg = json.loads(line)
+        except (ValueError, RecursionError) as e:   # RecursionError: absurdly nested JSON must not kill the server
+            resp = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"Parse error: {e}"}}
+        else:
+            try:
+                resp = handle(msg) if isinstance(msg, dict) else {
+                    "jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid request"}}
+            except Exception as e:                    # keep the id so the client can match the reply to its request
+                mid = msg.get("id") if isinstance(msg, dict) else None
+                resp = None if mid is None else {"jsonrpc": "2.0", "id": mid,
+                                                  "error": {"code": -32603, "message": f"Internal error: {e}"}}
         if resp is not None:
             sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
             sys.stdout.flush()

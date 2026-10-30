@@ -36,7 +36,8 @@ Install paths are detected under `C:\Program Files\Aurora Vision`; override with
 
 | Tool | What it does |
 |---|---|
-| `avs_search_filters` | Search filters by keyword in the installed AVL documentation |
+| `avs_search_filters` | Find **Studio** filters for a task (`fit circle edges`, `read barcode`, `modbus write register`) in the filter catalog; filters missing from the installed Studio are left out. Without the catalog: keyword search in the AVL documentation |
+| `avs_filter_info` | One Studio filter: purpose, module, toolbox place, whether the installed Studio has it, every port with type / range / default / description, usual example values, and a ready call whose name, port names and default literals were loaded by the installed Studio |
 | `avs_filter_doc` | Syntax, parameters, defaults and errors of one filter or data type; shows the **Studio Filter Reference** page (Studio port names) first when it has been downloaded (see below) |
 | `avs_docs_search` / `avs_docs_read` | Full-text (BM25) search over all docs on this machine — AVL functions and data types, Machine Vision Guide, Deep Learning, and the **Studio manual** (formulas, Optional/Conditional, project files…) after `python docs_ingest.py all_chapters.pdf` (needs `pypdf` once; the PDF comes from docs.adaptive-vision.com and is not shipped), and the **Studio Filter Reference** (source `Studio filter`) after `python filters_fetch.py` |
 | `avs_search_examples` | How a filter / formula is actually written in the official `.avcode` examples |
@@ -69,6 +70,20 @@ Pages go to `../avs_docs_cache/studio_filters` (or `$AVS_DOCS_CACHE/studio_filte
 Zebra's content and are not shipped. The search index is rebuilt automatically on the next `avs_docs_search`. The
 pages describe the current online version (5.7.x at the time of writing), which can differ slightly from an older
 installed Studio.
+
+Then build the filter catalog for `avs_search_filters` / `avs_filter_info` (about 15 s):
+
+```bash
+python catalog.py && python verify_filters.py && python catalog.py
+```
+
+`catalog.py` merges the pages with the Studio toolbox tree (`toolbox.xml`) and the AVL C++ defaults (converted to
+.avcode literals: a Double is written `1.0D`, a Long `100L`). `verify_filters.py` writes one program calling every
+filter with all its ports and defaults and loads it with `AuroraVisionAvexeGenerator` (no GUI, no license): every
+filter missing from the installed Studio, port that does not exist and default it rejects is recorded. A control
+call with a planted wrong port and value must be reported, or the run stops. On Studio 5.6 with the 5.7.4 reference:
+3610 filters fully match, 123 are 5.7-only, 19 have 5.7-only ports, 4109 of 4110 defaults load. This proves names
+and literals, not results: run the program (`avs_run`) to check those.
 
 ### HMI and communication
 
@@ -177,7 +192,7 @@ MIT — see [LICENSE](LICENSE).
 MCP server giúp trợ lý AI viết và kiểm tra chương trình **Aurora Vision Studio**: tra filter trong tài liệu và các ví dụ chính hãng có trên máy, nạp và **chạy** project không cần mở giao diện (`avs_run`, cần cài Runtime cùng phiên bản), và mô tả bài toán machine vision bằng một **thư mục task** (`task.toml` + ảnh có vẽ đánh dấu + `expected.csv` đáp án) để trợ lý tự viết → chạy → so đáp án → sửa.
 
 - Cài: clone repo, thêm vào `.mcp.json` như trên. Cần Python 3.11+, không cần cài thêm thư viện.
-- Tra cứu cổng (port) Studio của filter: chạy `python filters_fetch.py` một lần để tải Filter Reference công khai (~55 MB, không đưa vào repo).
+- Tra cứu filter Studio: chạy `python filters_fetch.py` một lần để tải Filter Reference công khai (~55 MB, không đưa vào repo), rồi `python catalog.py && python verify_filters.py && python catalog.py` để dựng danh mục ~3750 filter đã kiểm bằng chính Studio cài trên máy (`avs_search_filters` tìm theo việc cần làm, `avs_filter_info` cho cổng, giá trị mặc định và lời gọi mẫu).
 - Mô tả bài toán: gọi prompt `describe_task`, trợ lý sẽ hỏi từng ý (đo gì, chi tiết trông thế nào, ảnh thay đổi ra sao, dung sai, đáp án mẫu…) rồi tạo thư mục task.
 - Bài toán phức tạp = chuỗi bước, mỗi bước một loại (`measure`, `defect`, …) và ghi rõ `rule` / `deep`.
 - Nếu ứng dụng chat hỗ trợ MCP Apps, trang đánh dấu hiện ngay trong khung chat; nếu không thì mở trên trình duyệt như cũ.

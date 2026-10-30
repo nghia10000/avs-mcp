@@ -27,6 +27,8 @@ MIME = {".png": "image/png", ".bmp": "image/bmp", ".jpg": "image/jpeg", ".jpeg":
         ".tif": "image/tiff", ".tiff": "image/tiff"}
 VERDICT_TYPES = ("defect", "decide", "classify")
 _servers = {}                                         # task_dir -> (server, url)
+MAX_UPLOAD = 512 * 2**20                              # one uploaded image; larger requests are refused
+MAX_SAVE = 8 * 2**30                                  # a save body (annotations + one rendered PNG per marked image)
 
 
 def clean(v, default):
@@ -40,6 +42,12 @@ def task_paths(task_dir):
         if os.path.isdir(img_dir) else []
     key = clean(spec.get("output", {}).get("key"), "image")
     exp_file = clean(spec.get("expected", {}).get("file"), "expected.csv")
+    # the page writes expected.csv and copies / moves images: keep both inside the task folder
+    for what, path in (("task.images", img_dir), ("expected.file", os.path.join(task_dir, str(exp_file)))):
+        if not task_spec.inside(path, task_dir):
+            raise ValueError(f"{what} in task.toml must be inside the task folder, got {os.path.realpath(path)}")
+    if not str(exp_file).lower().endswith(".csv"):        # Save overwrites it with CSV (not task.toml, annotations.json)
+        raise ValueError(f"expected.file in task.toml must be a .csv file, got {exp_file}")
     steps = spec.get("steps", [])
     verdict_col = next((st["column"] for st in steps if st.get("type") in VERDICT_TYPES
                         and isinstance(st.get("column"), str) and not task_spec.is_todo(st["column"])), "result")
@@ -216,7 +224,24 @@ def make_handler(task_dir):
         def send_json(self, code, obj):
             self.send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
+        def foreign(self, post):
+            """True for requests not made by the page itself: another Host (DNS rebinding) or, for writes, a
+            cross-site Origin / Sec-Fetch-Site (a web page in the user's browser posting to this port)."""
+            port = self.server.server_address[1]
+            own = {f"127.0.0.1:{port}", f"localhost:{port}"}
+            if self.headers.get("Host", "") not in own:
+                return True
+            if post:
+                origin = self.headers.get("Origin")
+                if origin is not None and origin not in {"http://" + h for h in own}:
+                    return True
+                if self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
+                    return True
+            return False
+
         def do_GET(self):
+            if self.foreign(False):
+                return self.send(403, b"forbidden", "text/plain")
             path = self.path.split("?", 1)[0]
             if path == "/":
                 with open(PAGE, "rb") as f:
@@ -235,8 +260,20 @@ def make_handler(task_dir):
         def do_POST(self):
             from urllib.parse import parse_qs, urlsplit
             url = urlsplit(self.path)
+            if self.foreign(True):
+                return self.send(403, b"forbidden", "text/plain")
             try:
-                data = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                size = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                size = -1
+            # Save carries a rendered PNG of every marked image (5120 x 5120 images: tens of MB each), so it gets
+            # a much larger limit than one uploaded image
+            limit = MAX_SAVE if url.path == "/api/save" else MAX_UPLOAD
+            if size < 0 or size > limit:
+                return self.send_json(413 if size > limit else 400,
+                                      {"ok": False, "message": f"Content-Length must be 0..{limit // 2**20} MB"})
+            try:
+                data = self.rfile.read(size)
                 if url.path == "/api/save":
                     return self.send_json(200, {"ok": True, "message": save(task_dir, json.loads(data.decode("utf-8")))})
                 if url.path == "/api/upload":               # raw image bytes, ?name=<file name>

@@ -57,6 +57,23 @@ class Protocol(unittest.TestCase):
     def test_unknown_tool(self):
         self.assertTrue(call("nope")[1])
 
+    def test_null_params_keep_the_id(self):
+        for method in ("initialize", "tools/call", "prompts/get", "resources/read"):
+            r = avs_mcp.handle({"jsonrpc": "2.0", "id": 7, "method": method, "params": None})
+            self.assertEqual(r["id"], 7, method)
+        lines = [{"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": None}, "not json", [1, 2],
+                 "[" * 100000, {"jsonrpc": "2.0", "id": 6, "method": "ping"}]          # still alive after deep JSON
+        p = subprocess.run([sys.executable, os.path.join(ROOT, "avs_mcp.py")], capture_output=True, text=True,
+                           encoding="utf-8", timeout=30,
+                           input="".join((x if isinstance(x, str) else json.dumps(x)) + "\n" for x in lines))
+        out = [json.loads(line) for line in p.stdout.splitlines()]
+        self.assertEqual(out[0]["id"], 5)
+        self.assertTrue(out[0]["result"]["isError"])                                 # no tool name: tool error
+        self.assertEqual(out[1]["error"]["code"], -32700)                            # parse error
+        self.assertEqual(out[2]["error"]["code"], -32600)                            # not a request object
+        self.assertEqual(out[3]["error"]["code"], -32700)                            # nesting too deep
+        self.assertEqual(out[4]["id"], 6)
+
 
 class Spec(unittest.TestCase):
     def setUp(self):
@@ -180,6 +197,108 @@ column = "result"
         write(os.path.join(self.dir, "results.csv"), "image,d,result\na,10.1,OK\nb,19.8,NG\nc,30.4,OK\n")
         self.assertIn("No holdout images", call("avs_evaluate", task_dir=self.dir)[0])
 
+    def test_fail_is_an_error(self):                                                 # agents key on isError
+        write(os.path.join(self.dir, "results.csv"), "image,d,result\na,10.9,OK\nb,20.0,NG\nc,30.0,OK\n")
+        text, err = call("avs_evaluate", task_dir=self.dir)
+        self.assertTrue(text.startswith("FAIL") and err, text)
+        write(os.path.join(self.dir, "results.csv"), "image,d,result\na,10.1,OK\nb,19.8,NG\nc,30.4,OK\n")
+        self.assertFalse(call("avs_evaluate", task_dir=self.dir)[1])
+
+    def test_blank_expected_cells_are_skipped(self):
+        # no measurement on the NG part, c not marked yet: blanks are "no ground truth", not values to match
+        write(os.path.join(self.dir, "expected.csv"), "image,d,result\na.png,10.0,OK\nb.png,,NG\nc.png,30.0,\n")
+        write(os.path.join(self.dir, "results.csv"), "image,d,result\na,10.1,OK\nb,5,NG\nc,30.4,OK\n")
+        text, err = call("avs_evaluate", task_dir=self.dir)
+        self.assertTrue(text.startswith("PASS") and not err, text)
+        self.assertIn("[d] numeric, 2 value(s)", text)                              # tolerance applied, b skipped
+        self.assertIn("[result] categorical: 2/2 correct", text)                    # c skipped
+        self.assertIn("escapes (NG passed): 0/1", text)                             # OK/NG report kept
+
+    def test_short_rows_and_no_ground_truth(self):
+        write(os.path.join(self.dir, "expected.csv"), "image,d,result\na.png,10.0,OK\nb.png,20.0,NG\nc.png\n")
+        write(os.path.join(self.dir, "results.csv"), "image,d,result,gap\na,10.1,OK,1\nb,19.8,NG,9\nc,30.4,OK,2\n")
+        text, err = call("avs_evaluate", task_dir=self.dir)                          # c.png row has no cells: None
+        self.assertTrue(text.startswith("PASS") and not err, text)
+        self.assertIn("Margins for [result]", text)
+        write(os.path.join(self.dir, "expected.csv"), "image,d,result\na.png,,\nb.png,,\nc.png,,\n")
+        text, err = call("avs_evaluate", task_dir=self.dir)
+        self.assertTrue(text.startswith("FAIL") and err, text)
+        self.assertIn("No ground truth", text)
+
+    def test_all_holdout_does_not_fail_on_empty_tune(self):
+        write(os.path.join(self.dir, "expected.csv"),
+              "image,d,result,split\na.png,10.0,OK,holdout\nb.png,20.0,NG,holdout\nc.png,30.0,OK,holdout\n")
+        write(os.path.join(self.dir, "results.csv"), "image,d,result\na,10.1,OK\nb,19.8,NG\nc,30.4,OK\n")
+        text, err = call("avs_evaluate", task_dir=self.dir)
+        self.assertTrue(text.startswith("PASS") and not err, text)
+        self.assertNotIn("not in results.csv", text)
+
+    def test_split_keeps_tune_images(self):
+        write(os.path.join(self.dir, "expected.csv"), "image,result\na.png,OK\nb.png,OK\nc.png,NG\nd.png,NG\ne.png,\n")
+        text, err = call("avs_split", task_dir=self.dir, fraction=0.9)
+        self.assertFalse(err, text)
+        rows = avs_mcp.task_spec.read_csv(os.path.join(self.dir, "expected.csv"))
+        for v in ("OK", "NG"):                                                       # never a whole class held out
+            self.assertIn("tune", [r["split"] for r in rows if r["result"] == v])
+
+    def test_run_refuses_results_outside_the_task(self):
+        victim = os.path.join(tempfile.mkdtemp(), "victim.csv")
+        write(victim, "keep me")
+        write(os.path.join(self.dir, "task.toml"), f'[task]\nname = "e"\n[output]\nresults_csv = {json.dumps(victim)}\n')
+        proj = os.path.join(self.dir, "p.avproj")
+        write(proj, "<AuroraVisionProject />")
+        with unittest.mock.patch.object(avs_mcp, "RUNTIME_DIR", self.dir), \
+                unittest.mock.patch("os.path.exists", lambda p, real=os.path.exists: True if p.endswith(
+                    "AuroraVisionConsole.exe") else real(p)):
+            text, err = call("avs_run", project=proj, task_dir=self.dir)
+        self.assertTrue(err)
+        self.assertIn("inside the task folder", text)
+        self.assertTrue(os.path.exists(victim))                                      # not deleted
+        shutil.rmtree(os.path.dirname(victim))
+        write(os.path.join(self.dir, "task.toml"), '[task]\nname = "e"\n[output]\nresults_csv = "expected.csv"\n')
+        with unittest.mock.patch.object(avs_mcp, "RUNTIME_DIR", self.dir), \
+                unittest.mock.patch("os.path.exists", lambda p, real=os.path.exists: True if p.endswith(
+                    "AuroraVisionConsole.exe") else real(p)):
+            text, err = call("avs_run", project=proj, task_dir=self.dir)
+        self.assertTrue(err)
+        self.assertIn("ground-truth file", text)
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "expected.csv")))      # ground truth kept
+
+    def test_run_reports_a_failed_evaluation(self):
+        proj = os.path.join(self.dir, "p.avproj")
+        write(proj, "<AuroraVisionProject />")
+
+        def fake_run(cmd, **kw):                                                     # generator, then the program
+            if cmd[0].endswith("AuroraVisionAvexeGenerator.exe"):
+                write(cmd[-1], "exe")
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            write(os.path.join(self.dir, "results.csv"), "image,d,result\na,10.9,OK\nb,20.0,NG\nc,30.0,OK\n")
+            return subprocess.CompletedProcess(cmd, 0, "Program successfully finished.", "")
+        real_exists = os.path.exists
+        with unittest.mock.patch.object(avs_mcp.subprocess, "run", fake_run), \
+                unittest.mock.patch("os.path.exists", lambda p: True if p.endswith("AuroraVisionConsole.exe")
+                                    else real_exists(p)):
+            text, err = call("avs_run", project=proj, task_dir=self.dir)
+        self.assertIn("FAIL", text)
+        self.assertIn("OUT a", text)
+        self.assertTrue(err, text)                                                   # a failing run is an error
+
+    def test_rows_longer_than_the_header(self):
+        write(os.path.join(self.dir, "expected.csv"), "image,d,result\na.png,10.0,OK,extra\nb.png,20.0,NG\n")
+        write(os.path.join(self.dir, "results.csv"), "image,d,result\na,10.1,OK\nb,19.8,NG\n")
+        text, err = call("avs_evaluate", task_dir=self.dir)
+        self.assertTrue(text.startswith("PASS") and not err, text)
+        self.assertFalse(call("avs_split", task_dir=self.dir, fraction=0.5)[1])
+
+    def test_split_refuses_an_expected_file_outside(self):
+        out = tempfile.mkdtemp()
+        write(os.path.join(out, "v.csv"), "image,result\na.png,OK\nb.png,NG\n")
+        write(os.path.join(self.dir, "task.toml"), f'[task]\nname = "e"\n[expected]\nfile = {json.dumps(os.path.join(out, "v.csv"))}\n')
+        text, err = call("avs_split", task_dir=self.dir)
+        self.assertTrue(err)
+        self.assertNotIn("split", open(os.path.join(out, "v.csv"), encoding="utf-8").read())
+        shutil.rmtree(out)
+
 
 class Margins(unittest.TestCase):
     def setUp(self):
@@ -249,6 +368,42 @@ class Annotate(unittest.TestCase):
         except urllib.error.HTTPError as e:
             with e:
                 return json.loads(e.read())
+
+    def test_foreign_requests_are_refused(self):
+        url = re.search(r"http://\S+/", call("avs_annotate", task_dir=self.dir, open_browser=False)[0]).group(0)
+        port = urllib.parse.urlsplit(url).port
+
+        def status(path, headers, body=None):
+            req = urllib.request.Request(url + path, body, headers, method="POST" if body is not None else "GET")
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return r.status
+            except urllib.error.HTTPError as e:
+                with e:
+                    return e.code
+        save = json.dumps({"images": {}, "image_info": {"a.png": {"verdict": "NG"}}}).encode()
+        self.assertEqual(status("api/task", {"Host": f"rebind.example:{port}"}), 403)          # DNS rebinding
+        self.assertEqual(status("api/save", {"Origin": "http://evil.example", "Content-Type": "text/plain"},
+                                save), 403)                                                   # cross-site POST
+        self.assertEqual(status("api/remove?name=a.png", {"Sec-Fetch-Site": "cross-site"}, b""), 403)
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "images", "a.png")))
+        self.assertNotIn("NG", open(os.path.join(self.dir, "expected.csv"), encoding="utf-8").read())
+        self.assertEqual(status("api/save", {"Origin": f"http://127.0.0.1:{port}",                # the page itself
+                                             "Sec-Fetch-Site": "same-origin"}, save), 200)
+        self.assertEqual(status("api/task", {}), 200)
+        for bad in ("-1", "abc"):                                                    # no hang, no traceback
+            self.assertEqual(status("api/save", {"Content-Length": bad}, b""), 400)
+
+    def test_task_paths_stay_inside(self):
+        write(os.path.join(self.dir, "task.toml"), '[task]\nname = "a"\n[expected]\nfile = "task.toml"\n')
+        with self.assertRaises(ValueError):                                          # Save would overwrite it
+            avs_mcp.annotate.task_paths(self.dir)
+        write(os.path.join(self.dir, "task.toml"), '[task]\nname = "a"\n[expected]\nfile = "../escaped.csv"\n')
+        with self.assertRaises(ValueError):
+            avs_mcp.annotate.task_paths(self.dir)
+        write(os.path.join(self.dir, "task.toml"), '[task]\nname = "a"\nimages = "C:/Windows"\n')
+        with self.assertRaises(ValueError):
+            avs_mcp.annotate.task_paths(self.dir)
 
     def test_page_task_and_save(self):
         text, err = call("avs_annotate", task_dir=self.dir, open_browser=False)
@@ -574,7 +729,7 @@ class FilterPorts(unittest.TestCase):
         text, err = avs_mcp.ports.filter_ports("ScanSingleEdg", self.dir)
         self.assertTrue(err)
         self.assertIn("ScanSingleEdge", text)                                      # close name suggested
-        self.assertIn("avs_filter_doc", text)
+        self.assertIn("avs_filter_info", text)
         self.assertTrue(avs_mcp.ports.filter_ports("X", os.path.join(self.dir, "none"))[1])
 
 
@@ -639,6 +794,133 @@ HMI_XML = """<HMI RelativeDPI="1">
   </Controls>
 </HMI>
 """
+
+
+PAGE = """<h1>ScanExactlyNEdges (ScanEdges ExactlyN)</h1>
+<div class="user_level_icon_block" ><a href="x"><img src="u.png" class="o" /> Basic</a></div>
+<table><tr><th>Module:</th><td style="p">MetrologyBasic</td></tr></table>
+<p>Locates edges.</p>
+<table class="hor_zebra_table">
+<tr class="odd"><td><img alt="Input value"/></td><td>inImage</td><td colspan="2"><a>Image</a></td><td>Input image</td></tr>
+<tr class="even"><td><img alt="Input value"/></td><td>inMaxDistance</td><td><a>Real</a><a>*</a></td>
+<td>0.0 - <img src="../../img/infinity.png" /></td><td>Maximal distance</td></tr>
+<tr class="odd"><td><img alt="Input will be modified"/></td><td>ioArray</td><td colspan="2"><a>Integer</a><a>Array</a></td><td>A</td></tr>
+<tr class="even"><td><img alt="Output value"/></td><td>outEdges</td><td colspan="2"><a>Edge1D</a><a>Array</a><a>?</a></td><td>Found</td></tr>
+</table>"""
+
+
+class Catalog(unittest.TestCase):
+    def setUp(self):
+        import catalog
+        self.c = catalog
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def test_cpp_defaults_become_avcode_literals(self):
+        v = self.c.avcode_value
+        self.assertEqual(v("0.6f"), "0.6")
+        self.assertEqual(v("Selection::​Best"), "Best")
+        self.assertEqual(v("SelectionBest"), "Best")
+        self.assertEqual(v("atl::NIL"), "Nil")
+        self.assertEqual(v("true"), "True")
+        self.assertEqual(v("1.0", "Double"), "1.0D")            # Studio rejects 1.0 for a Double
+        self.assertEqual(v("15", "Double"), "15.0D")
+        self.assertEqual(v("100L", "Long"), "100L")
+        self.assertEqual(v("100", "Integer"), "100")
+        self.assertEqual(v("DoublePrecision_64Bit_LittleEndian.0f"), "DoublePrecision_64Bit_LittleEndian")
+        self.assertEqual(v("EdgeScanParams ( SmoothingStdDev: 0.6f MinMagnitude: 5.0f )"),
+                         "EdgeScanParams ( SmoothingStdDev: 0.6 MinMagnitude: 5.0 )")
+
+    def test_page_ports(self):
+        d = os.path.join(self.tmp, "1DEdgeDetection")
+        os.makedirs(d)
+        write(os.path.join(d, "ScanExactlyNEdges.html"), PAGE)
+        r = self.c.parse_page(os.path.join(d, "ScanExactlyNEdges.html"))
+        self.assertEqual((r["title"], r["module"], r["level"], r["summary"]),
+                         ("ScanEdges ExactlyN", "MetrologyBasic", "Basic", "Locates edges."))
+        p = {x["name"]: x for x in r["ports"]}
+        self.assertEqual(list(p), ["inImage", "inMaxDistance", "ioArray", "outEdges"])
+        self.assertEqual((p["inMaxDistance"]["optional"], p["inMaxDistance"]["range"]), (True, "0.0 - inf"))
+        self.assertEqual(p["ioArray"]["kind"], "inout")
+        self.assertEqual((p["outEdges"]["type"], p["outEdges"]["array"], p["outEdges"]["conditional"]),
+                         ("Edge1D", 1, True))
+
+    def fake_catalog(self):
+        recs = {"FitCircleToEdges": {
+            "name": "FitCircleToEdges", "title": "", "level": "Basic", "module": "M", "path": ["Shape Fitting"],
+            "summary": "Finds a circle matching detected edge points.", "applications": "", "doc_category": "x",
+            "ports": [{"kind": "in", "name": "inImage", "type": "Image", "desc": ""},
+                      {"kind": "in", "name": "inEdgeSelection", "type": "Selection", "desc": "", "default": "Best"},
+                      {"kind": "in", "name": "inNew57", "type": "Integer", "desc": "", "default": "1"},
+                      {"kind": "out", "name": "outCircle", "type": "Circle2D", "desc": "", "conditional": True}],
+            "verified": {"status": "ports", "bad": ["input inNew57"]}},
+            "AuroraOnly57": {"name": "AuroraOnly57", "title": "", "level": "Basic", "module": "M", "path": ["X"],
+                             "summary": "Fits a circle, newer.", "applications": "", "doc_category": "x",
+                             "ports": [], "verified": {"status": "missing"}}}
+        path = os.path.join(self.tmp, "filters_catalog.json")
+        write(path, json.dumps(recs))
+        p = unittest.mock.patch.object(self.c, "OUT", path)
+        p.start()
+        self.addCleanup(p.stop)
+        self.c._loaded.clear()
+        self.addCleanup(self.c._loaded.clear)
+
+    def test_info_leaves_out_ports_missing_from_the_installed_studio(self):
+        self.fake_catalog()
+        text, err = self.c.filter_info("fitcircletoedges")
+        self.assertFalse(err)
+        self.assertIn("inNew57 (not in installed Studio)", text)
+        call_text = text[text.index("FitCircleToEdges\n("):]
+        self.assertNotIn("inNew57", call_text)
+        self.assertIn("inEdgeSelection: Best", call_text)
+        self.assertIn("outCircle: con_...", call_text)
+        text, err = self.c.filter_info("FitCircleToEdgez")
+        self.assertTrue(err)
+        self.assertIn("FitCircleToEdges", text)
+
+    def test_search_by_task_skips_filters_missing_from_studio(self):
+        self.fake_catalog()
+        text = self.c.search("fit circles edges")               # plural and camel-case name words still match
+        self.assertIn("FitCircleToEdges", text)
+        self.assertNotIn("AuroraOnly57", text)
+        self.assertIn("AuroraOnly57", self.c.search("circle", include_missing=True))
+
+    def test_not_built(self):
+        with unittest.mock.patch.object(self.c, "OUT", os.path.join(self.tmp, "none.json")):
+            self.assertIsNone(self.c.search("circle"))
+            text, err = self.c.filter_info("X")
+        self.assertTrue(err)
+        self.assertIn("catalog.py", text)
+
+
+class VerifyFilters(unittest.TestCase):
+    """The AvexeGenerator log -> per-filter verdicts, with the control call that must be reported."""
+    LOG = ('<root>\t[Error]\tFilter or macrofilter \'Gone\' does not exist or there is no valid license for it.\n'
+           '<root>\t[Error]\tInput \'inNew\' not found in filter "Main::PROCESS → (1)Same".\n'
+           '<root>\t[Error]\tUnable to initialize input "inK" of filter "(2)Same" instantiated in macrofilter "M".\n'
+           '<root>\t[Error]\tInput \'inPlantedBogus\' not found in filter "Main::PROCESS → (3)RegionArea".\n'
+           '<root>\t[Error]\tUnable to initialize input "inRegion" of filter "(3)RegionArea" instantiated in macrofilter'
+           ' "M".\n')
+    RECS = [{"name": "Gone", "ports": []},
+            {"name": "Same", "ports": [{"kind": "in", "name": "inNew"}]},
+            {"name": "Other", "ports": [{"kind": "in", "name": "inK", "default": "1"}]}]
+
+    def run_check(self, log):
+        import verify_filters
+        done = subprocess.CompletedProcess([], 0, log, "")
+        with unittest.mock.patch.object(verify_filters.subprocess, "run", return_value=done):
+            return verify_filters.check(self.RECS)
+
+    def test_verdicts_follow_the_call_index(self):
+        out, other, _ = self.run_check(self.LOG)
+        self.assertEqual(out["Gone"], {"status": "missing"})
+        self.assertEqual(out["Same"], {"status": "ports", "bad": ["input inNew"]})
+        self.assertEqual(out["Other"], {"status": "ok", "bad_default": ["inK"]})      # (2) is Other, not Same
+        self.assertEqual(other, [])
+
+    def test_a_silent_log_is_refused(self):
+        with self.assertRaises(RuntimeError):                    # the planted errors were not reported
+            self.run_check("Loading source program...\nDone.\n")
 
 
 class Hmi(unittest.TestCase):
@@ -723,7 +1005,17 @@ class Hmi(unittest.TestCase):
         self.assertTrue(avs_mcp.hmi.hmi_check(self.proj)[1])
 
 
-@unittest.skipUnless(os.path.isdir(avs_mcp.EXAMPLES_DIR), "Aurora Vision Studio examples not installed")
+def png_gray(path, w, h, white):
+    """8-bit gray PNG, white where white(x, y)."""
+    import struct
+    import zlib
+    raw = b"".join(b"\x00" + bytes(255 if white(x, y) else 0 for x in range(w)) for y in range(h))
+    chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
 class InstalledHmi(unittest.TestCase):
     def test_examples_pass_check(self):
         import glob

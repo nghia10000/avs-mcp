@@ -192,7 +192,7 @@ def filter_ports(name, examples_dir):
         near += sorted(n for n in cat if key and key.lower() in n.lower() and n not in near)[:8]
         return (f"'{name}' is not called in any of the {nfiles} example programs, so its Studio ports are unknown here. "
                 + (f"Similar filters that are: {', '.join(near)}. " if near else "")
-                + "Use avs_filter_doc / avs_docs_search (C++ parameter names; Studio ports may differ) and confirm with "
+                + "Use avs_filter_info (all Studio ports, checked against the installed Studio) and confirm with "
                   "avs_validate."), True
     f = cat[key]
     out = [f"{key}: {f['calls']} call(s) in {len(f['files'])} example file(s); e.g. {', '.join(f['refs'])}"]

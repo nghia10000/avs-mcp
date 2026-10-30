@@ -141,6 +141,16 @@ def read_csv(path):
         return list(csv.DictReader(f))
 
 
+def inside(path, folder):
+    """True when path (after resolving '..' and links) is folder or lies under it. Paths read from a task.toml may be
+    absolute or climb out with '..'; tools that write or delete check them with this first."""
+    p, d = os.path.realpath(path), os.path.realpath(folder)
+    try:
+        return os.path.commonpath([p, d]) == d
+    except ValueError:                                  # different drives on Windows
+        return False
+
+
 def check_task(task_dir):
     path = os.path.join(task_dir, "task.toml")
     if not os.path.exists(path):

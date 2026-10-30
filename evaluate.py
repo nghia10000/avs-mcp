@@ -11,7 +11,7 @@ import math
 import os
 import random
 
-from task_spec import load_task, read_csv, step_columns
+from task_spec import inside, load_task, read_csv, step_columns
 
 OK_NG = {"OK", "NG"}
 SPLIT = "split"
@@ -37,6 +37,19 @@ def fmt(v):
     return f"{v:.4g}"
 
 
+def cell(row, c):
+    """Stripped text of a CSV cell; '' when missing (rows shorter than the header give None, longer ones a list
+    under the None key)."""
+    v = row.get(c)
+    return v.strip() if isinstance(v, str) else ""
+
+
+def verdict_values(rows, c):
+    """True when column c holds OK/NG verdicts: every filled cell is OK or NG (blank = not marked) and one is filled."""
+    vals = {cell(r, c) for r in rows} - {""}
+    return bool(vals) and vals <= OK_NG
+
+
 def task_files(task_dir, results=None, expected=None, key=None):
     spec = load_task(task_dir) if os.path.exists(os.path.join(task_dir, "task.toml")) else {}
     out_sec = spec.get("output", {})
@@ -46,16 +59,22 @@ def task_files(task_dir, results=None, expected=None, key=None):
 
 
 def compare(keys, exp, res, cols, tol):
-    """Lines and failed flag for the expected columns over the given images."""
+    """Lines and failed flag for the expected columns over the given images. A blank expected cell means "no ground
+    truth for this image in this column" (e.g. no measurement on an NG part, an image not marked yet): skipped."""
     out, failed = [], False
+    if not keys:
+        return out, failed
     for c in cols:
-        pairs = [(k, exp[k][c], res[k].get(c)) for k in keys]
+        pairs = [(k, exp[k][c], res[k].get(c)) for k in keys if cell(exp[k], c)]
+        if not pairs:
+            out.append(f"\n[{c}] no expected values for these images")
+            continue
         if all(r is None for _, _, r in pairs):
             out.append(f"\n[{c}] not in results.csv")
             failed = True
             continue
         nums = [(k, to_float(e), to_float(r)) for k, e, r in pairs]
-        if pairs and all(e is not None for _, e, _ in nums):
+        if all(e is not None for _, e, _ in nums):
             errs = [(k, r - e) for k, e, r in nums if r is not None]
             bad_read = [k for k, _, r in nums if r is None]
             out.append(f"\n[{c}] numeric, {len(errs)} value(s)")
@@ -95,8 +114,9 @@ def compare(keys, exp, res, cols, tol):
 
 def margins(keys, exp, res, verdict_col, features):
     """How well each measured feature separates OK from NG images (by the expected verdict)."""
-    ok = [k for k in keys if exp[k][verdict_col].strip() == "OK"]
-    ng = [k for k in keys if exp[k][verdict_col].strip() == "NG"]
+    v = lambda k: cell(exp[k], verdict_col)                     # blank = not marked
+    ok = [k for k in keys if v(k) == "OK"]
+    ng = [k for k in keys if v(k) == "NG"]
     if not ok or not ng or not features:
         return []
     out = [f"\nMargins for [{verdict_col}] over {len(ok)} OK / {len(ng)} NG image(s) "
@@ -182,7 +202,7 @@ def evaluate(task_dir, results=None, expected=None, key=None, tolerances=None):
     missing = [k for k in exp if k not in res]
     extra = [k for k in res if k not in exp]
     exp_cols = list(next(iter(exp.values())).keys()) if exp else []
-    cols = [c for c in exp_cols if c not in (key, SPLIT)]
+    cols = [c for c in exp_cols if c not in (key, SPLIT, None)]      # None: cells beyond the header
     matched = [k for k in exp if k in res]
     tune = [k for k in matched if not is_holdout(exp[k])]
     hold = [k for k in matched if is_holdout(exp[k])]
@@ -194,6 +214,10 @@ def evaluate(task_dir, results=None, expected=None, key=None, tolerances=None):
     if extra:
         out.append(f"Results without ground truth (ignored): {len(extra)}")
     failed = bool(missing)
+    if not any(cell(exp[k], c) for k in matched for c in cols):
+        out.append("No ground truth: every expected cell of the matched images is blank, so nothing can be checked. "
+                   "Mark the images (avs_annotate) or fill expected.csv.")
+        failed = True
 
     if n_hold:
         out.append(f"\n=== TUNE images ({len(tune)}): use these to develop and set thresholds ===")
@@ -204,10 +228,9 @@ def evaluate(task_dir, results=None, expected=None, key=None, tolerances=None):
     out += lines
     failed = failed or f1
 
-    verdict_cols = [c for c in cols if exp and {(exp[k].get(c) or "").strip() for k in exp} <= OK_NG
-                    and any((exp[k].get(c) or "").strip() for k in exp)]
+    verdict_cols = [c for c in cols if verdict_values(exp.values(), c)]
     res_cols = list(next(iter(res.values())).keys()) if res else []
-    features = [c for c in res_cols if c not in exp_cols and c != key
+    features = [c for c in res_cols if c not in exp_cols and c not in (key, None)
                 and any(to_float(r.get(c)) is not None for r in res.values())]
     for vc in verdict_cols:
         out += margins(tune, exp, res, vc, features)
@@ -219,12 +242,14 @@ def evaluate(task_dir, results=None, expected=None, key=None, tolerances=None):
         failed = failed or f2
 
     out.insert(0, "FAIL" if failed else "PASS")
-    return "\n".join(out), False
+    return "\n".join(out), failed          # FAIL is an error result, so agents that check isError do not stop early
 
 
 def split(task_dir, fraction=0.3, seed=0, expected=None, key=None):
     """Mark about `fraction` of the images in expected.csv as holdout, keeping the OK/NG ratio."""
     spec, _, expected, key = task_files(task_dir, None, expected, key)
+    if not inside(expected, task_dir) or not expected.lower().endswith(".csv"):   # split rewrites this file
+        return f"The expected file must be a .csv inside the task folder, got {os.path.realpath(expected)}.", True
     if not os.path.exists(expected):
         return f"File not found: {expected}. Mark the images first (avs_annotate).", True
     if not 0 < fraction < 1:
@@ -232,25 +257,24 @@ def split(task_dir, fraction=0.3, seed=0, expected=None, key=None):
     rows = read_csv(expected)
     if not rows or key not in rows[0]:
         return f"{expected} has no '{key}' column.", True
-    fields = list(rows[0].keys())
+    fields = [c for c in rows[0].keys() if c is not None]           # None: cells beyond the header (dropped)
     if SPLIT not in fields:
         fields.append(SPLIT)
-    verdict = next((c for c in fields if c not in (key, SPLIT)
-                    and {(r.get(c) or "").strip() for r in rows} <= OK_NG), None)
+    verdict = next((c for c in fields if c not in (key, SPLIT) and verdict_values(rows, c)), None)
     groups = {}
     for r in rows:
-        groups.setdefault((r.get(verdict) or "").strip() if verdict else "", []).append(r)
+        groups.setdefault(cell(r, verdict) if verdict else "", []).append(r)
     rng = random.Random(seed)
     out = []
     for g, rs in sorted(groups.items()):
         rs = sorted(rs, key=lambda r: r[key])
         rng.shuffle(rs)
-        n = round(len(rs) * fraction) if len(rs) > 1 else 0
+        n = min(round(len(rs) * fraction), len(rs) - 1) if len(rs) > 1 else 0   # keep >= 1 of each kind to tune on
         for i, r in enumerate(rs):
             r[SPLIT] = "holdout" if i < n else "tune"
         out.append(f"{g or 'all'}: {n} holdout / {len(rs) - n} tune")
     with open(expected, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         w.writerows(rows)
     held = sorted(r[key] for r in rows if r[SPLIT] == "holdout")
