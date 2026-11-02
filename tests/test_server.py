@@ -857,6 +857,11 @@ class Catalog(unittest.TestCase):
             "AuroraOnly57": {"name": "AuroraOnly57", "title": "", "level": "Basic", "module": "M", "path": ["X"],
                              "summary": "Fits a circle, newer.", "applications": "", "doc_category": "x",
                              "ports": [], "verified": {"status": "missing"}}}
+        for n in (1, 2):
+            recs[f"DL_DetectAnomalies{n}"] = {
+                "name": f"DL_DetectAnomalies{n}", "title": "", "level": "Basic", "module": "DL", "path": ["DeepLearning"],
+                "summary": f"Executes a Detect Anomalies {n} model on a single input image.", "applications": "",
+                "doc_category": "DeepLearning", "ports": [], "verified": {"status": "ok"}}
         path = os.path.join(self.tmp, "filters_catalog.json")
         write(path, json.dumps(recs))
         p = unittest.mock.patch.object(self.c, "OUT", path)
@@ -884,6 +889,14 @@ class Catalog(unittest.TestCase):
         self.assertIn("FitCircleToEdges", text)
         self.assertNotIn("AuroraOnly57", text)
         self.assertIn("AuroraOnly57", self.c.search("circle", include_missing=True))
+
+    def test_search_by_name_with_digits(self):
+        self.fake_catalog()
+        for q in ("anomaly2", "Anomaly 2", "DL_DetectAnomalies2", "detectanomalies2", "anomaly detection 2"):
+            first = self.c.search(q).splitlines()[1]
+            self.assertIn("DL_DetectAnomalies2", first, q)
+        self.assertNotIn("DL_DetectAnomalies2 ", self.c.search("anomaly 1"))
+
 
     def test_not_built(self):
         with unittest.mock.patch.object(self.c, "OUT", os.path.join(self.tmp, "none.json")):

@@ -297,13 +297,26 @@ def search(query, limit=20, include_missing=False):
     if recs is None:
         return None
     stem = lambda w: re.sub(r"(ies|es|s|y)$", "", w) if len(w) > 4 else w   # blobs -> blob, anomaly/anomalies -> anomal
-    words = [stem(w) for w in re.findall(r"[a-z0-9]+", (query or "").lower()) if len(w) > 1]
+
+    def camel(s):                                     # DL_DetectAnomalies2 -> "dl detect anomalies 2", before lower()
+        s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
+        s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", s)
+        s = re.sub(r"([A-Za-z])(\d)|(\d)([A-Za-z])", lambda m: " ".join(x for x in m.groups() if x), s)
+        return s.replace("_", " ").lower()
+
+    words = [stem(w) for w in re.findall(r"[a-z0-9]+", camel(query or "")) if len(w) > 1 or w.isdigit()]
     if not words:
         return "Give a few words, e.g. 'fit circle edges', 'count blobs', 'read barcode'."
-    camel = lambda s: re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s).replace("_", " ").lower()
+    pattern = {w: r"\b" + re.escape(w) + (r"\b" if w.isdigit() else "") for w in words}   # 2 must not match 20
+    compact = re.sub(r"[^a-z0-9]", "", (query or "").lower())   # 'detectanomalies2' typed without separators
     hits = []
     for r in recs.values():
         if not include_missing and r.get("verified", {}).get("status") == "missing":
+            continue
+        name = re.sub(r"[^a-z0-9]", "", r["name"].lower())
+        if len(compact) >= 4 and compact in name:
+            exact = compact == name
+            hits.append((-(100 if exact else 50) - len(compact) / len(name), r["name"], r))
             continue
         tb = r.get("toolbox", {})
         fields = [(camel(r["name"] + " " + r["title"]), 4),
@@ -313,7 +326,7 @@ def search(query, limit=20, include_missing=False):
                   (camel(" ".join(p["name"] + " " + p.get("desc", "") for p in r["ports"])), 0.5)]
         score, matched = 0.0, 0
         for w in words:
-            got = [wt for f, wt in fields if re.search(r"\b" + re.escape(w), f)]
+            got = [wt for f, wt in fields if re.search(pattern[w], f)]
             if got:
                 matched += 1
                 score += max(got)
