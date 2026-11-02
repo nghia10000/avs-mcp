@@ -77,12 +77,12 @@ Then build the filter catalog for `avs_search_filters` / `avs_filter_info` (abou
 python catalog.py && python verify_filters.py && python catalog.py
 ```
 
-`catalog.py` merges the pages with the Studio toolbox tree (`toolbox.xml`) and the AVL C++ defaults (converted to
+`catalog.py` merges the pages (plus the Deep Learning filter pages of the installed Aurora Deep Learning documentation, which the online reference lacks) with the Studio toolbox tree (`toolbox.xml`) and the AVL C++ defaults (converted to
 .avcode literals: a Double is written `1.0D`, a Long `100L`). `verify_filters.py` writes one program calling every
 filter with all its ports and defaults and loads it with `AuroraVisionAvexeGenerator` (no GUI, no license): every
 filter missing from the installed Studio, port that does not exist and default it rejects is recorded. A control
 call with a planted wrong port and value must be reported, or the run stops. On Studio 5.6 with the 5.7.4 reference:
-3610 filters fully match, 123 are 5.7-only, 19 have 5.7-only ports, 4109 of 4110 defaults load. This proves names
+3661 filters fully match (51 of them Deep Learning), 123 are 5.7-only, 19 have 5.7-only ports, 4109 of 4110 defaults load. This proves names
 and literals, not results: run the program (`avs_run`) to check those.
 
 ### HMI and communication

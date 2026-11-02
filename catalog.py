@@ -67,7 +67,7 @@ def parse_page(path):
     m = re.search(r"Module:</th>\s*<td[^>]*>(.*?)</td>", t, re.S)
     rec["module"] = text(m.group(1)) if m else ""
     crumbs = re.findall(r'&raquo;\s*<a href="[^"]*">(.*?)</a>', t)
-    rec["path"] = [text(c) for c in crumbs[1:-1]]
+    rec["path"] = [text(c) for c in crumbs[1:-1]] or [rec["doc_category"]]
     i = t.find("</table>", t.find("Module:")) if "Module:" in t else t.find("</h1>")
     m = re.search(r"<p>(.*?)</p>", t[i:], re.S)
     rec["summary"] = text(m.group(1)) if m else ""
@@ -149,20 +149,28 @@ def avl_defaults(doc_dir):
     return out
 
 
-def build(avs_dir, doc_dir=""):
+def build(avs_dir, doc_dir="", dl_doc_dir=""):
+    """dl_doc_dir: the installed Aurora Deep Learning documentation, whose filters/ pages (DL_DetectAnomalies2...)
+    have the same Studio port tables but are not in the online Studio Filter Reference."""
     recs = {}
-    for path in sorted(glob.glob(os.path.join(PAGES, "*", "*.html"))):
+    pages = sorted(glob.glob(os.path.join(PAGES, "*", "*.html")))
+    if dl_doc_dir:
+        pages += sorted(glob.glob(os.path.join(dl_doc_dir, "filters", "*", "*.html")))
+    for path in pages:
         if os.path.basename(path) == "index.html":
             continue
         r = parse_page(path)
-        recs[r["name"]] = r
+        recs.setdefault(r["name"], r)                         # the downloaded reference wins on a name clash
     tb = toolbox(avs_dir)
     for r in recs.values():
         group = r["title"].split(" ")[0] if r["title"] else ""
         hit = tb.get(r["name"]) or tb.get(group) or tb.get(r["name"].split("_")[0])
         if hit:
             r["toolbox"] = hit
-    defaults = avl_defaults(doc_dir) if doc_dir else {}
+    defaults = {}
+    for d in (dl_doc_dir, doc_dir):                           # the AVL pages win on a name clash
+        if d:
+            defaults.update(avl_defaults(d))
     for r in recs.values():
         d = defaults.get(r["name"]) or {}
         for p in r["ports"]:
@@ -247,7 +255,7 @@ def filter_info(name, examples_dir=""):
     tb = r.get("toolbox", {})
     out = [f"{r['name']}" + (f"  ({r['title']})" if r["title"] else ""),
            f"Module {r['module']} | level {r['level']} | " + " > ".join(r["path"])
-           + (f" | toolbox: {tb['category']} > {tb['group']} > {tb['subgroup']}" if tb else ""),
+           + (" | toolbox: " + " > ".join(x for x in (tb['category'], tb['group'], tb['subgroup']) if x) if tb else ""),
            f"Status: {status(r)}", "", r["summary"]]
     if r["applications"]:
         out.append("Applications: " + r["applications"])
@@ -288,7 +296,7 @@ def search(query, limit=20, include_missing=False):
     recs = load()
     if recs is None:
         return None
-    stem = lambda w: re.sub(r"(es|s)$", "", w) if len(w) > 4 else w      # blobs -> blob, boxes -> box
+    stem = lambda w: re.sub(r"(ies|es|s|y)$", "", w) if len(w) > 4 else w   # blobs -> blob, anomaly/anomalies -> anomal
     words = [stem(w) for w in re.findall(r"[a-z0-9]+", (query or "").lower()) if len(w) > 1]
     if not words:
         return "Give a few words, e.g. 'fit circle edges', 'count blobs', 'read barcode'."
@@ -325,8 +333,8 @@ def search(query, limit=20, include_missing=False):
 
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(__file__))
-    from avs_mcp import AVS_DIR, DOC_DIR
-    recs = build(AVS_DIR, DOC_DIR)
+    from avs_mcp import AVS_DIR, DOC_DIR, DL_DOC_DIR
+    recs = build(AVS_DIR, DOC_DIR, DL_DOC_DIR)
     kinds = {}
     for r in recs.values():
         for p in r["ports"]:
