@@ -68,6 +68,10 @@ example = "CSV"
 required = false
 description = "What to report when a feature is not found."
 example = "NG"
+[sections.output.fields.found_column]
+required = false
+description = "Result column that says whether the program found the feature (True/False). Rows with False are counted as 'not found' by avs_evaluate, not as wrong values. Default: 'found' when results.csv has it."
+example = "found"
 
 [sections.expected]
 summary = "Ground truth, so results can be checked automatically."
@@ -75,6 +79,10 @@ summary = "Ground truth, so results can be checked automatically."
 required = false
 description = "CSV with the correct value per image (caliper / CMM / manual OK-NG), relative to the task folder."
 example = "expected.csv"
+[sections.expected.fields.from_annotations]
+required = false
+description = "Expected numeric columns computed from the shapes drawn in avs_annotate: { column = \"<kind>[<class>].<property>\" }, e.g. rect.left, point.x, circle[hole].diameter, line.length. Saved into the expected file on every Save."
+example = { split_x = "rect.left" }
 
 [step]
 summary = "Common fields of every [[steps]] entry."
@@ -98,6 +106,10 @@ example = []
 required = false
 description = "Free description of this step."
 example = ""
+[step.fields.tolerance]
+required = false
+description = "Allowed deviation of the step's numeric columns, used as pass limit by avs_evaluate: one number for all columns, or a table per column, e.g. { split_x = 17 }."
+example = 0.5
 
 [feature]
 summary = "Optional [[features]]: things the steps refer to."

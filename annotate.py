@@ -92,9 +92,14 @@ def task_state(task_dir):
         if img in p["images"] and v in ("OK", "NG") and not info.get(img, {}).get("verdict"):
             info.setdefault(img, {})["verdict"] = v
     name = clean(p["spec"].get("task", {}).get("name"), os.path.basename(os.path.abspath(task_dir)))
+    try:                                              # shown on the page, so the user sees what a shape will mean
+        task_spec.from_annotations(p["spec"])
+        refs = dict(p["spec"].get("expected", {}).get("from_annotations") or {})
+    except ValueError:
+        refs = {}
     return {"name": name, "task_dir": os.path.abspath(task_dir), "images": p["images"], "key": p["key"],
             "verdict_col": p["verdict_col"], "expected_file": p["exp_file"], "classes": classes,
-            "steps": p["steps"], "features": p["features"],
+            "steps": p["steps"], "features": p["features"], "from_annotations": refs,
             "annotations": ann.get("images", {}), "image_info": info}
 
 
@@ -119,16 +124,24 @@ def save(task_dir, body):
     exp_path = os.path.join(task_dir, p["exp_file"])
     fields, rows = read_expected(exp_path, key)
     verdicts = {img: i["verdict"] for img, i in info.items() if i.get("verdict") in ("OK", "NG")}
+    derived, notes = task_spec.derive_expected(p["spec"], shapes)          # [expected] from_annotations
+    dcols = list(task_spec.from_annotations(p["spec"]))
     n_exp = 0
-    if verdicts or rows:
+    if verdicts or rows or derived:
         fields = fields or [key]
-        if col not in fields:
+        if verdicts and col not in fields:
             fields.append(col)
+        fields += [c for c in dcols if c not in fields]
         for img in p["images"]:
             if img in verdicts:
                 rows.setdefault(img, {key: img})[col] = verdicts[img]
-            elif img in rows:
+            elif img in rows and col in fields:
                 rows[img][col] = ""
+            if img in derived:
+                rows.setdefault(img, {key: img}).update({c: str(v) for c, v in derived[img].items()})
+            for c in dcols:                                                 # shape removed: no ground truth
+                if img in rows and c not in derived.get(img, {}):
+                    rows[img][c] = ""
         ordered = [rows[img] for img in p["images"] if img in rows] + \
                   [r for k, r in rows.items() if k not in known]
         ordered = [r for r in ordered if any((r.get(c) or "").strip() for c in fields if c != key)]
@@ -151,9 +164,13 @@ def save(task_dir, body):
             f.write(base64.b64decode(data.split(",", 1)[-1]))
 
     n_ng = sum(1 for v in verdicts.values() if v == "NG")
-    return (f"Saved {sum(len(v) for v in shapes.values())} shape(s) on {len(shapes)} image(s); "
-            f"verdicts {len(verdicts) - n_ng} OK / {n_ng} NG in {p['exp_file']} ({n_exp} row(s)); "
-            f"{len(renders)} image(s) in annotated/.")
+    msg = (f"Saved {sum(len(v) for v in shapes.values())} shape(s) on {len(shapes)} image(s); "
+           f"verdicts {len(verdicts) - n_ng} OK / {n_ng} NG in {p['exp_file']} ({n_exp} row(s)); "
+           f"{len(renders)} image(s) in annotated/.")
+    if dcols:
+        msg += f" Expected {', '.join(dcols)} from the shapes on {len(derived)} image(s)."
+        msg += "".join(f"\n{n}" for n in notes[:10])
+    return msg
 
 
 def add_image(task_dir, name, data):

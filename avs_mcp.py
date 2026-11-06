@@ -28,6 +28,7 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,7 +42,7 @@ import ports  # noqa: E402
 import catalog  # noqa: E402
 import hmi  # noqa: E402
 from annotate import annotate_tool  # noqa: E402
-from evaluate import evaluate, split  # noqa: E402
+from evaluate import compare_versions, evaluate, split  # noqa: E402
 
 VERSION = "0.3.0"
 AV_ROOT = r"C:\Program Files\Aurora Vision"
@@ -54,8 +55,32 @@ def latest(pattern):
     return max(hits, key=key) if hits else ""
 
 
-AVS_DIR = os.environ.get("AVS_DIR") or latest("Aurora Vision Studio 5.* Professional") or latest("Aurora Vision Studio 5.*")
-RUNTIME_DIR = os.environ.get("AVS_RUNTIME_DIR") or latest("Aurora Vision Studio 5.* Runtime")
+def version_of(path):
+    """'C:\\...\\Aurora Vision Studio 5.6 Professional' -> '5.6' ('' when the name has no version)."""
+    m = re.search(r"\b(\d+\.\d+)\b", os.path.basename(str(path or "").rstrip("\\/")))
+    return m.group(1) if m else ""
+
+
+def pick_installs(env=os.environ):
+    """(Studio dir, Runtime dir) of the SAME version: a program is built by the Studio's AvexeGenerator and run by
+    the Runtime's Console, and a mismatch (e.g. Studio 5.7 + Runtime 5.6) fails or behaves differently.
+    AVS_DIR / AVS_RUNTIME_DIR win; AVS_VERSION (e.g. 5.6) pins both; otherwise the newest version installed as both
+    Studio and Runtime, else the newest Studio."""
+    studios = [p for p in glob.glob(os.path.join(AV_ROOT, "Aurora Vision Studio 5.*"))
+               if not p.endswith("Runtime")]
+    runtimes = glob.glob(os.path.join(AV_ROOT, "Aurora Vision Studio 5.* Runtime"))
+    num = lambda p: [int(x) for x in version_of(p).split(".") if x.isdigit()]
+    pro_first = lambda p: (num(p), p.endswith("Professional"))
+    studio, runtime = env.get("AVS_DIR", ""), env.get("AVS_RUNTIME_DIR", "")
+    want = env.get("AVS_VERSION", "").strip() or version_of(studio) or version_of(runtime)
+    if not want:
+        both = {version_of(p) for p in studios} & {version_of(p) for p in runtimes}
+        want = max(both, key=lambda v: [int(x) for x in v.split(".")]) if both else ""
+    pick = lambda cands: max((p for p in cands if not want or version_of(p) == want), key=pro_first, default="")
+    return studio or pick(studios) or max(studios, key=pro_first, default=""), runtime or pick(runtimes)
+
+
+AVS_DIR, RUNTIME_DIR = pick_installs()
 DOC_DIR = os.environ.get("AVL_DOC_DIR") or os.path.join(latest("Aurora Vision Library 5.*"), "Documentation")
 FUNC_DIR = os.path.join(DOC_DIR, "functions")
 TYPE_DIR = os.path.join(DOC_DIR, "datatypes")
@@ -186,6 +211,48 @@ def search_examples(query, limit=5, context=12):
 
 # ------------------------------------------------------------------ Studio
 
+LICENSE_BUSY = "License process limit"               # max 3 Aurora processes per license: wait and retry
+LICENSE_RETRIES, LICENSE_WAIT = 6, 10
+
+
+def run_aurora(cmd, **kw):
+    """subprocess.run for an Aurora Vision tool, retried while the license's process limit is reached."""
+    for attempt in range(LICENSE_RETRIES + 1):
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", **kw)
+        if LICENSE_BUSY not in (r.stdout or "") + (r.stderr or "") or attempt == LICENSE_RETRIES:
+            return r
+        time.sleep(LICENSE_WAIT)
+
+
+def hints(log):
+    """Plain explanations for Aurora errors that do not say what to do."""
+    out = []
+    m = re.search(r"compiled for use in Aurora Vision Studio ([\d.]+), cannot load it in ([\d.]+)", log)
+    if m:
+        out.append(f"Hint: a user filter DLL was built with the SDK of Studio {m.group(1)} but this is {m.group(2)}. "
+                   "User filters only load in the exact Studio version (patch included) whose SDK built them: "
+                   f"rebuild the DLL with the Studio {m.group(2)} SDK.")
+    if LICENSE_BUSY in log:
+        out.append(f"Hint: more than 3 Aurora Vision processes were running (license limit) for "
+                   f"{LICENSE_RETRIES * LICENSE_WAIT} s; run Aurora tools one at a time.")
+    m = re.search(r"Cannot open file: '([^']+)'\. Error code: (\d+)", log)
+    if m and m.group(2) in ("2", "3"):
+        out.append(f"Hint: the folder of {m.group(1)} does not exist; the program must create it (CreateDirectories) "
+                   "or it must exist before the run.")
+    elif m and m.group(2) in ("13", "32"):
+        out.append(f"Hint: {m.group(1)} is locked (open in Excel / Studio, or read-only); close it, or run with "
+                   "params pointing the output to another folder.")
+    if "does not exist or there is no valid license" in log:
+        out.append(f"Hint: a filter is unknown to Studio {version_of(AVS_DIR)} (newer version?) or needs a module "
+                   "license; check its name with avs_filter_info.")
+    return ("\n\n" + "\n".join(out)) if out else ""
+
+
+def tools_line():
+    rt = version_of(RUNTIME_DIR)
+    return f"Studio {version_of(AVS_DIR) or '?'}" + (f", Runtime {rt}" if RUNTIME_DIR else "")
+
+
 def validate(project):
     project = os.path.abspath(project)
     if not project.lower().endswith(".avproj") or not os.path.exists(project):
@@ -194,27 +261,103 @@ def validate(project):
     if not os.path.exists(gen):
         return f"AuroraVisionAvexeGenerator.exe not found in {AVS_DIR}; set AVS_DIR.", True
     with tempfile.TemporaryDirectory() as tmp:
-        r = subprocess.run([gen, "-overwrite", "-no-logo", project, os.path.join(tmp, "check.avexe")],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        r = run_aurora([gen, "-overwrite", "-no-logo", project, os.path.join(tmp, "check.avexe")], timeout=300)
     log = (r.stdout + r.stderr).strip()
     code = r.returncode - (1 << 32) if r.returncode >= (1 << 31) else r.returncode   # Windows returns negatives as unsigned
     ok = code == 0
-    head = "VALID: project loads without errors." if ok else f"ERRORS (exit {code})."
+    head = (f"VALID: project loads without errors" if ok else f"ERRORS (exit {code})") + f" ({tools_line()})."
     note = ("\nNote: this only checks loading (filter names, types, connections, formulas). "
             "The program is not run, so results are not known.")
-    return f"{head}\n\n{log}{note}", not ok
+    return f"{head}\n\n{log}{hints(log)}{note}", not ok
 
 
-def run_project(project, task_dir=None, timeout=600):
-    """Build an .avexe next to the project (relative paths resolve from there) and run it with AuroraVisionConsole."""
+EXTERN = re.compile(r'^(\s*extern\s+public\s+(\w+)\s+(\w+)\s*=\s*)(.*?)\s*$')
+
+
+def project_files(project):
+    """Files of a project referenced by relative path in the .avproj (programs, views, HMI)."""
+    import xml.etree.ElementTree as ET
+    out = []
+    for el in ET.parse(project).getroot().iter():
+        for attr in ("Path", "Path64"):
+            p = el.get(attr)
+            if p and not os.path.isabs(p):
+                out.append(p)
+    return out
+
+
+def avcode_literal(typ, value):
+    if typ in ("String", "Directory", "File"):
+        return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if typ == "Bool":
+        return "True" if str(value).strip().lower() in ("true", "1", "yes") else "False"
+    if typ == "Double":
+        return f"{float(value)!r}D"
+    if typ == "Long":
+        return f"{int(value)}L"
+    return str(value)
+
+
+def with_params(project, params, tmp):
+    """Copy of the project in tmp whose `extern public` globals are set from params (e.g. ImageFolder, OutputFolder).
+    Returns (copied .avproj, error)."""
+    pdir = os.path.dirname(project)
+    files = project_files(project)
+    found, lines_by_file = {}, {}
+    for rel in files:
+        src = os.path.join(pdir, rel)
+        if rel.lower().endswith(".avcode") and os.path.exists(src):
+            with open(src, encoding="utf-8-sig") as f:
+                lines = f.read().split("\n")
+            for i, ln in enumerate(lines):
+                m = EXTERN.match(ln)
+                if m:
+                    found[m.group(3)] = (rel, i, m.group(1), m.group(2))
+            lines_by_file[rel] = lines
+    unknown = [n for n in params if n not in found]
+    if unknown:
+        avail = ", ".join(f"{n} ({t})" for n, (_, _, _, t) in found.items()) or "none"
+        return None, (f"No `extern public` global named {', '.join(unknown)} in the project. Available: {avail}. "
+                      "Declare folders as globals (extern public Directory ImageFolder = \"...\") to set them per run.")
+    for name, value in params.items():
+        rel, i, head, typ = found[name]
+        try:
+            lines_by_file[rel][i] = head + avcode_literal(typ, value)
+        except ValueError:
+            return None, f"{name} is {typ}; {value!r} is not a valid value."
+    for rel in files:
+        src, dst = os.path.join(pdir, rel), os.path.join(tmp, rel)
+        if not os.path.exists(src):
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if rel in lines_by_file:
+            with open(dst, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines_by_file[rel]))
+        else:
+            shutil.copy2(src, dst)
+    copy = os.path.join(tmp, os.path.basename(project))
+    shutil.copy2(project, copy)
+    return copy, None
+
+
+def run_project(project, task_dir=None, timeout=600, params=None):
+    """Build an .avexe next to the project (relative paths resolve from there) and run it with AuroraVisionConsole.
+    params sets `extern public` globals for this run only (e.g. {"ImageFolder": ..., "OutputFolder": ...}): the
+    project is copied to a temporary folder with the new values; the original files are not changed."""
     project = os.path.abspath(project)
     if not project.lower().endswith(".avproj") or not os.path.exists(project):
         return "Give the path of an existing .avproj file.", True
     gen = os.path.join(AVS_DIR, "AuroraVisionAvexeGenerator.exe")
     console = os.path.join(RUNTIME_DIR, "AuroraVisionConsole.exe")
     if not os.path.exists(console):
-        return ("AuroraVisionConsole.exe not found: install Aurora Vision Studio Runtime (same version as Studio) "
-                "or set AVS_RUNTIME_DIR.", True)
+        return (f"AuroraVisionConsole.exe not found: install Aurora Vision Studio Runtime {version_of(AVS_DIR)} "
+                "(the same version as Studio) or set AVS_RUNTIME_DIR.", True)
+    if version_of(AVS_DIR) != version_of(RUNTIME_DIR):
+        return (f"Studio {version_of(AVS_DIR)} builds the program but Runtime {version_of(RUNTIME_DIR)} would run it. "
+                "Install the matching Runtime, or pin one version with AVS_VERSION (or AVS_DIR + AVS_RUNTIME_DIR) "
+                "in the MCP server's environment.", True)
+    if params is not None and not isinstance(params, dict):
+        return 'params must be an object: { "GlobalName": value }.', True
     pdir = os.path.dirname(project)
     exe = os.path.join(pdir, ".avs_run.avexe")
 
@@ -238,28 +381,38 @@ def run_project(project, task_dir=None, timeout=600):
             os.remove(results)                          # programs append; start from an empty file
 
     before = {f: os.path.getmtime(os.path.join(pdir, f)) for f in os.listdir(pdir)}
+    tmp = tempfile.mkdtemp(prefix="avs_run_") if params else None
     try:
-        g = subprocess.run([gen, "-overwrite", "-no-logo", project, exe],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        source = project
+        if params:
+            source, err = with_params(project, params, tmp)
+            if err:
+                return err, True
+        g = run_aurora([gen, "-overwrite", "-no-logo", source, exe], timeout=300)
         if g.returncode != 0 or not os.path.exists(exe):
-            return f"Build failed (fix with avs_validate):\n{(g.stdout + g.stderr).strip()}", True
+            log = (g.stdout + g.stderr).strip()
+            return f"Build failed (fix with avs_validate):\n{log}{hints(log)}", True
         try:
-            r = subprocess.run([console, exe], cwd=pdir, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace", timeout=timeout)
+            r = run_aurora([console, exe], cwd=pdir, timeout=timeout)
         except subprocess.TimeoutExpired:
             return (f"Program still running after {timeout} s and was stopped. "
                     "Check that EnumerateImages has inRepeat = False and no loop waits for a camera or HMI."), True
     finally:
         if os.path.exists(exe):
             os.remove(exe)
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     log = "\n".join(ln for ln in (r.stdout + r.stderr).splitlines()
                     if ln.strip() and not set(ln.strip()) <= {"-"} and "loading:" not in ln)
     ok = "Program successfully finished" in log and "[Error]" not in log   # exit code is 0 even on failure
     changed = sorted(f for f in os.listdir(pdir)
                      if f != os.path.basename(exe) and os.path.getmtime(os.path.join(pdir, f)) != before.get(f))
-    out = [("FINISHED" if ok else "FAILED") + f" — {os.path.basename(project)} with {os.path.basename(RUNTIME_DIR)}",
-           "", log or "(no output)", "", "Files written in the project folder: " + (", ".join(changed) or "none")]
+    out = [("FINISHED" if ok else "FAILED") + f" — {os.path.basename(project)} ({tools_line()})"]
+    if params:
+        out.append("Globals for this run: " + ", ".join(f"{k} = {v}" for k, v in params.items()))
+    out += ["", (log or "(no output)") + hints(log), "",
+            "Files written in the project folder: " + (", ".join(changed) or "none")]
     if task_dir and ok:
         if results and os.path.exists(results):
             text, failed = evaluate(task_dir)
@@ -445,8 +598,13 @@ TOOLS = [
     {"name": "avs_run",
      "description": "Run an .avproj headlessly with Aurora Vision Runtime (AuroraVisionConsole) until the program finishes, "
                     "e.g. after EnumerateImages has gone through a folder. Relative paths resolve from the project folder. "
-                    "With task_dir: clears the task's results CSV first and runs avs_evaluate afterwards.",
-     "inputSchema": obj({"project": S, "task_dir": S, "timeout": {"type": "integer", "default": 600}}, ["project"])},
+                    "With task_dir: clears the task's results CSV first and runs avs_evaluate afterwards. params sets the "
+                    "program's `extern public` globals for this run only, e.g. {\"ImageFolder\": \"D:/new_images\", "
+                    "\"OutputFolder\": \"D:/run2\"} - the project is built from a temporary copy, so the files and "
+                    "earlier outputs are not touched. Studio and Runtime must be the same version (both are reported).",
+     "inputSchema": obj({"project": S, "task_dir": S, "timeout": {"type": "integer", "default": 600},
+                         "params": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}}},
+                        ["project"])},
     {"name": "avs_open",
      "description": "Open an .avproj in Aurora Vision Studio so the user can press Run. Waits until a Studio window shows the project; "
                     "errors if Studio is already running with another project (only one instance is allowed).",
@@ -469,11 +627,18 @@ TOOLS = [
      "inputSchema": obj({"task_dir": S, "open_browser": {"type": "boolean", "default": True}}, ["task_dir"]),
      "_meta": {"ui": {"resourceUri": annotate.UI_URI}}},
     {"name": "avs_evaluate",
-     "description": "Compare the program's results.csv with expected.csv of a task: numeric error vs tolerance, OK/NG escapes and "
-                    "false rejects, reported separately for tune and holdout images. Numeric result columns not in expected.csv "
-                    "(measured features) get a margin report: OK range, NG range, NG images closest to the OK range.",
+     "description": "Compare the program's results.csv with expected.csv of a task: numeric error vs tolerance (task.toml step "
+                    "`tolerance`, a number or { column = limit }), OK/NG escapes and false rejects, reported separately for "
+                    "tune and holdout images. Each numeric value is counted as within tolerance, WRONG (outside it but "
+                    "reported as found: a silent failure) or not found (results column 'found' = False). Expected values "
+                    "missing from expected.csv are taken from the drawn shapes when task.toml has [expected] "
+                    "from_annotations. Numeric result columns not in expected.csv (measured features) get a margin "
+                    "report. With `compare` (list of results CSVs, one per program version) prints a per-image error "
+                    "table of all versions and their within / wrong / not-found counts instead.",
      "inputSchema": obj({"task_dir": S, "results": S, "expected": S, "key": S,
-                         "tolerances": {"type": "object", "additionalProperties": {"type": "number"}}}, ["task_dir"])},
+                         "tolerances": {"type": "object", "additionalProperties": {"type": "number"}},
+                         "compare": {"type": "array", "items": S}, "labels": {"type": "array", "items": S}},
+                        ["task_dir"])},
     {"name": "avs_split",
      "description": "Mark about `fraction` of a task's images as holdout in expected.csv (column 'split', OK/NG ratio kept). "
                     "Tune the program on the other images only; avs_evaluate reports holdout accuracy separately.",
@@ -504,7 +669,7 @@ def call_tool(name, a):
     if name == "avs_validate":
         return validate(a.get("project", ""))
     if name == "avs_run":
-        return run_project(a.get("project", ""), a.get("task_dir"), int(a.get("timeout", 600)))
+        return run_project(a.get("project", ""), a.get("task_dir"), int(a.get("timeout", 600)), a.get("params"))
     if name == "avs_open":
         return open_project(a.get("project", ""))
     if name == "avs_task_types":
@@ -516,6 +681,9 @@ def call_tool(name, a):
     if name == "avs_annotate":
         return annotate_tool(a.get("task_dir", ""), bool(a.get("open_browser", True)), in_chat=CLIENT["ui"])
     if name == "avs_evaluate":
+        if a.get("compare"):
+            return compare_versions(a.get("task_dir", ""), a["compare"], a.get("labels"), a.get("key"),
+                                    a.get("tolerances"))
         return evaluate(a.get("task_dir", ""), a.get("results"), a.get("expected"), a.get("key"), a.get("tolerances"))
     if name == "avs_split":
         return split(a.get("task_dir", ""), float(a.get("fraction", 0.3)), int(a.get("seed", 0)))

@@ -11,7 +11,10 @@ import math
 import os
 import random
 
-from task_spec import inside, load_task, read_csv, step_columns
+import json
+
+from task_spec import (derive_expected, from_annotations, inside, is_todo, load_task, read_csv,
+                       tolerances as task_tolerances)
 
 OK_NG = {"OK", "NG"}
 SPLIT = "split"
@@ -58,10 +61,49 @@ def task_files(task_dir, results=None, expected=None, key=None):
     return spec, results, expected, key or out_sec.get("key", "image")
 
 
-def compare(keys, exp, res, cols, tol):
+FOUND_TRUE = {"true", "1", "yes", "ok"}
+FOUND_FALSE = {"false", "0", "no", "nil", ""}
+
+
+def found_flags(res, found_col):
+    """{image: True/False} from the results' found column, or {} when there is none."""
+    if not found_col:
+        return {}
+    flags = {}
+    for k, r in res.items():
+        v = cell(r, found_col).lower()
+        if v in FOUND_TRUE or v in FOUND_FALSE:
+            flags[k] = v in FOUND_TRUE
+    return flags
+
+
+def classify(keys, exp, res, c, tol, found):
+    """Per image of a numeric column: ('ok'|'wrong'|'miss'|'error', signed error or None).
+    miss = the program said not found (found column False); wrong = found but outside the tolerance (a silent
+    failure: the program gives a wrong position as if it were right); error = no usable number although found."""
+    rows = {}
+    for k in keys:
+        e = to_float(cell(exp[k], c))
+        if e is None:
+            continue
+        if found.get(k) is False:
+            rows[k] = ("miss", None)
+            continue
+        r = to_float(res[k].get(c))
+        if r is None:
+            rows[k] = ("error", None)
+        elif c in tol and abs(r - e) > tol[c]:
+            rows[k] = ("wrong", r - e)
+        else:
+            rows[k] = ("ok", r - e)
+    return rows
+
+
+def compare(keys, exp, res, cols, tol, found=None):
     """Lines and failed flag for the expected columns over the given images. A blank expected cell means "no ground
     truth for this image in this column" (e.g. no measurement on an NG part, an image not marked yet): skipped."""
     out, failed = [], False
+    found = found or {}
     if not keys:
         return out, failed
     for c in cols:
@@ -75,25 +117,33 @@ def compare(keys, exp, res, cols, tol):
             continue
         nums = [(k, to_float(e), to_float(r)) for k, e, r in pairs]
         if all(e is not None for _, e, _ in nums):
-            errs = [(k, r - e) for k, e, r in nums if r is not None]
-            bad_read = [k for k, _, r in nums if r is None]
-            out.append(f"\n[{c}] numeric, {len(errs)} value(s)")
+            rows = classify([k for k, _, _ in pairs], exp, res, c, tol, found)
+            errs = [(k, d) for k, (s, d) in rows.items() if d is not None]
+            misses = [k for k, (s, _) in rows.items() if s == "miss"]
+            bad_read = [k for k, (s, _) in rows.items() if s == "error"]
+            out.append(f"\n[{c}] numeric, {len(rows)} image(s)")
+            if c in tol:
+                ok = [k for k, (s, _) in rows.items() if s == "ok"]
+                wrong = [(k, d) for k, (s, d) in rows.items() if s == "wrong"]
+                out.append(f"  tolerance ±{tol[c]:g}: within {len(ok)}/{len(rows)}"
+                           f" | WRONG but reported as found {len(wrong)} | not found {len(misses)}"
+                           + (f" | no number {len(bad_read)}" if bad_read else ""))
+                out += [f"    WRONG {k}: error {d:+.4f}" for k, d in sorted(wrong, key=lambda x: -abs(x[1]))[:10]]
+                failed = failed or bool(wrong)
+                if errs and not wrong:
+                    out.append(f"  margin: worst error uses {max(abs(d) for _, d in errs) / tol[c]:.0%} of the tolerance")
             if errs:
-                abs_e = [abs(d) for _, d in errs]
+                abs_e = sorted(abs(d) for _, d in errs)
                 mean = sum(d for _, d in errs) / len(errs)
-                out.append(f"  error: mean {mean:+.4f}, mean |e| {sum(abs_e) / len(abs_e):.4f}, max |e| {max(abs_e):.4f}")
-                if c in tol:
-                    over = [(k, d) for k, d in errs if abs(d) > tol[c]]
-                    out.append(f"  tolerance ±{tol[c]}: {len(errs) - len(over)}/{len(errs)} within")
-                    out += [f"    OUT {k}: error {d:+.4f}" for k, d in sorted(over, key=lambda x: -abs(x[1]))[:10]]
-                    failed = failed or bool(over)
-                    if not over:
-                        worst = max(abs_e)
-                        out.append(f"  margin: worst error uses {worst / tol[c]:.0%} of the tolerance")
+                out.append(f"  error over {len(errs)} found image(s): mean {mean:+.4f}, mean |e| "
+                           f"{sum(abs_e) / len(abs_e):.4f}, median |e| {abs_e[len(abs_e) // 2]:.4f}, max |e| {abs_e[-1]:.4f}")
                 worst = sorted(errs, key=lambda x: -abs(x[1]))[:3]
                 out.append("  worst: " + ", ".join(f"{k} {d:+.4f}" for k, d in worst))
+            if misses:
+                out.append(f"  not found: {', '.join(misses[:10])}")
+                failed = True
             if bad_read:
-                out.append(f"  non-numeric result for: {', '.join(bad_read[:10])}")
+                out.append(f"  no numeric result although found: {', '.join(bad_read[:10])}")
                 failed = True
             continue
 
@@ -179,36 +229,70 @@ def margins(keys, exp, res, verdict_col, features):
     return out
 
 
+def load_expected(task_dir, spec, expected, key):
+    """Expected rows by image, with blank cells filled from the drawn shapes ([expected] from_annotations), so a
+    task can be evaluated before its expected file was re-saved. Returns (rows, notes)."""
+    exp = {r.get(key): r for r in read_csv(expected)} if os.path.exists(expected) else {}
+    notes = []
+    try:
+        refs = from_annotations(spec)
+    except ValueError as e:
+        return exp, [f"expected.from_annotations ignored: {e}"]
+    ann_path = os.path.join(task_dir, "annotations.json")
+    if refs and os.path.exists(ann_path):
+        with open(ann_path, encoding="utf-8") as f:
+            shapes = json.load(f).get("images", {})
+        derived, notes = derive_expected(spec, shapes)
+        filled = 0
+        for img, vals in derived.items():
+            row = exp.setdefault(img, {key: img})
+            for c, v in vals.items():
+                if not cell(row, c):
+                    row[c] = str(v)
+                    filled += 1
+        if filled:
+            notes.insert(0, f"{filled} expected value(s) taken from the drawn shapes (from_annotations).")
+        cols = set(refs)
+        for row in exp.values():                         # every row needs every column for the comparison
+            for c in cols:
+                row.setdefault(c, "")
+    return exp, notes
+
+
 def evaluate(task_dir, results=None, expected=None, key=None, tolerances=None):
     spec, results, expected, key = task_files(task_dir, results, expected, key)
-    tol = {}
-    for st in spec.get("steps", []):
-        if isinstance(st.get("tolerance"), (int, float)):
-            for c in step_columns(st):
-                tol[c] = float(st["tolerance"])
+    tol = task_tolerances(spec)
     tol.update(tolerances or {})
 
-    for p in (results, expected):
-        if not os.path.exists(p):
-            return f"File not found: {p}", True
+    if not os.path.exists(results):
+        return f"File not found: {results}", True
     res = {r.get(key): r for r in read_csv(results)}
-    exp = {r.get(key): r for r in read_csv(expected)}
+    exp, notes = load_expected(task_dir, spec, expected, key)
+    if not exp:
+        return f"No ground truth: {expected} not found and no shapes give expected values.", True
     if None in res or None in exp:
         return f"Key column '{key}' missing in results or expected CSV.", True
     # programs often write the file name without folder or extension
     by_stem = {stem(k): k for k in exp}
     res = {(k if k in exp else by_stem.get(stem(k), k)): r for k, r in res.items()}
+    found_col = spec.get("output", {}).get("found_column")
+    res_cols0 = list(next(iter(res.values())).keys()) if res else []
+    if not isinstance(found_col, str) or is_todo(found_col):
+        found_col = "found" if "found" in res_cols0 else None
+    found = found_flags(res, found_col)
 
     missing = [k for k in exp if k not in res]
     extra = [k for k in res if k not in exp]
     exp_cols = list(next(iter(exp.values())).keys()) if exp else []
-    cols = [c for c in exp_cols if c not in (key, SPLIT, None)]      # None: cells beyond the header
+    cols = [c for c in exp_cols if c not in (key, SPLIT, None, found_col)]      # None: cells beyond the header
     matched = [k for k in exp if k in res]
     tune = [k for k in matched if not is_holdout(exp[k])]
     hold = [k for k in matched if is_holdout(exp[k])]
     n_hold = sum(1 for r in exp.values() if is_holdout(r))
 
-    out = [f"{len(exp)} expected row(s), {len(res)} result row(s), {len(matched)} matched."]
+    out = [f"{len(exp)} expected row(s), {len(res)} result row(s), {len(matched)} matched."] + notes[:10]
+    if found_col:
+        out.append(f"Found column: '{found_col}' (False = the program reported 'not found').")
     if missing:
         out.append(f"No result for {len(missing)} image(s): {', '.join(missing[:10])}")
     if extra:
@@ -224,25 +308,103 @@ def evaluate(task_dir, results=None, expected=None, key=None, tolerances=None):
     else:
         out.append("No holdout images (expected.csv has no 'split' = holdout rows): every image is used for tuning, "
                    "so accuracy on new images is unknown. Create a split with avs_split.")
-    lines, f1 = compare(tune, exp, res, cols, tol)
+    lines, f1 = compare(tune, exp, res, cols, tol, found)
     out += lines
     failed = failed or f1
 
     verdict_cols = [c for c in cols if verdict_values(exp.values(), c)]
     res_cols = list(next(iter(res.values())).keys()) if res else []
-    features = [c for c in res_cols if c not in exp_cols and c not in (key, None)
+    features = [c for c in res_cols if c not in exp_cols and c not in (key, None, found_col)
                 and any(to_float(r.get(c)) is not None for r in res.values())]
     for vc in verdict_cols:
         out += margins(tune, exp, res, vc, features)
 
     if hold:
         out.append(f"\n=== HOLDOUT images ({len(hold)}): not for tuning; this is the estimate for new images ===")
-        lines, f2 = compare(hold, exp, res, cols, tol)
+        lines, f2 = compare(hold, exp, res, cols, tol, found)
         out += lines
         failed = failed or f2
 
     out.insert(0, "FAIL" if failed else "PASS")
     return "\n".join(out), failed          # FAIL is an error result, so agents that check isError do not stop early
+
+
+def compare_versions(task_dir, results_list, labels=None, key=None, tolerances=None):
+    """Several results CSVs (program versions) against the same ground truth: one table per numeric column with the
+    error of each version per image (WRONG = outside the tolerance but reported as found, MISS = not found), and
+    per version and split the counts within / wrong / not found."""
+    if not results_list:
+        return "Give the results CSVs to compare.", True
+    def default_label(i, p):                             # the project folder: .../MeshSplit2/output/results.csv
+        d = os.path.dirname(os.path.abspath(os.path.join(task_dir, p)))
+        if os.path.basename(d).lower() in ("output", "out", "results"):
+            d = os.path.dirname(d)
+        return os.path.basename(d) or f"v{i + 1}"
+    labels = list(labels or [])[:len(results_list)]
+    labels += [default_label(i, p) for i, p in enumerate(results_list) if i >= len(labels)]
+    spec, _, expected, key = task_files(task_dir, None, None, key)
+    tol = task_tolerances(spec)
+    tol.update(tolerances or {})
+    exp, notes = load_expected(task_dir, spec, expected, key)
+    if not exp:
+        return f"No ground truth: {expected} not found and no shapes give expected values.", True
+    by_stem = {stem(k): k for k in exp}
+    runs = []
+    for path in results_list:
+        p = os.path.join(task_dir, path)
+        if not os.path.exists(p):
+            return f"File not found: {p}", True
+        res = {r.get(key): r for r in read_csv(p)}
+        res = {(k if k in exp else by_stem.get(stem(k), k)): r for k, r in res.items()}
+        cols0 = list(next(iter(res.values())).keys()) if res else []
+        fc = spec.get("output", {}).get("found_column")
+        fc = fc if isinstance(fc, str) and not is_todo(fc) else ("found" if "found" in cols0 else None)
+        runs.append((res, found_flags(res, fc)))
+    exp_cols = list(next(iter(exp.values())).keys())
+    num_cols = [c for c in exp_cols if c not in (key, SPLIT, None)
+                and any(to_float(cell(r, c)) is not None for r in exp.values())]
+    if not num_cols:
+        return "No numeric expected column to compare.", True
+
+    w = max(8, *(len(l) for l in labels))
+    out = [f"{len(results_list)} version(s) against {expected}"] + notes[:5]
+    for c in num_cols:
+        t = tol.get(c)
+        out.append(f"\n[{c}] error per image" + (f", tolerance ±{t:g}" if t is not None else " (no tolerance set)"))
+        out.append(f"{'image':28} {'set':5} " + " ".join(f"{l:>{w}}" for l in labels))
+        per = []
+        for res, found in runs:
+            keys = [k for k in exp if k in res]
+            per.append(classify(keys, exp, res, c, tol, found))
+        for k in exp:
+            if to_float(cell(exp[k], c)) is None:
+                continue
+            cells = []
+            for rows, (res, _) in zip(per, runs):
+                s, d = rows.get(k, ("absent", None))
+                txt = {"miss": "MISS", "error": "NO-NUM", "absent": "-"}.get(s) or f"{d:+.1f}"
+                cells.append(f"{txt + ('!' if s == 'wrong' else ''):>{w}}")
+            out.append(f"{str(k)[:28]:28} {'hold' if is_holdout(exp[k]) else 'tune':5} " + " ".join(cells))
+        out.append("  (! = outside the tolerance but reported as found; MISS = reported not found)")
+        groups = [("tune", lambda k: not is_holdout(exp[k])), ("HOLDOUT", lambda k: is_holdout(exp[k])),
+                  ("all", lambda k: True)]
+        for gname, sel in groups:
+            ks = [k for k in exp if sel(k) and to_float(cell(exp[k], c)) is not None]
+            if not ks or (gname == "all" and len(ks) == sum(1 for k in exp if to_float(cell(exp[k], c)) is not None
+                                                          and not is_holdout(exp[k]))):
+                continue
+            parts = []
+            for l, rows in zip(labels, per):
+                st = [rows.get(k, ("absent", None)) for k in ks]
+                errs = sorted(abs(d) for s, d in st if d is not None)
+                n_ok = sum(s == "ok" for s, _ in st)
+                n_wrong = sum(s == "wrong" for s, _ in st)
+                n_miss = sum(s in ("miss", "error", "absent") for s, _ in st)
+                med = f", median |e| {errs[len(errs) // 2]:.1f}, max {errs[-1]:.1f}" if errs else ""
+                word = "within" if t is not None else "found"
+                parts.append(f"{l}: {word} {n_ok}/{len(ks)}, WRONG {n_wrong}, not found {n_miss}{med}")
+            out.append(f"  {gname}: " + " | ".join(parts))
+    return "\n".join(out), False
 
 
 def split(task_dir, fraction=0.3, seed=0, expected=None, key=None):

@@ -30,7 +30,7 @@ Claude Code — add to `.mcp.json` in your project (or `~/.claude.json`):
 
 Other MCP clients: run `python avs_mcp.py` over stdio.
 
-Install paths are detected under `C:\Program Files\Aurora Vision`; override with `AVS_DIR` (Studio folder), `AVS_RUNTIME_DIR` (Runtime folder), `AVL_DOC_DIR` (Library `Documentation` folder) and `AVS_EXAMPLES_DIR` (Studio examples in `C:\ProgramData\Aurora Vision\...`).
+Install paths are detected under `C:\Program Files\Aurora Vision`: the newest version installed as **both** Studio and Runtime (a program built by Studio 5.7 must not run on Runtime 5.6). Pin one with `AVS_VERSION` (e.g. `5.6`), or override with `AVS_DIR` (Studio folder), `AVS_RUNTIME_DIR` (Runtime folder), `AVL_DOC_DIR` (Library `Documentation` folder) and `AVS_EXAMPLES_DIR` (Studio examples in `C:\ProgramData\Aurora Vision\...`).
 
 ## Tools
 
@@ -45,13 +45,13 @@ Install paths are detected under `C:\Program Files\Aurora Vision`; override with
 | `avs_hmi_controls` | HMI (`.avhmi`, WinForms-like XML) control types used in the official examples — `Label`, `VideoBox`, `PassFailIndicator`, `ImpulseButton`, `NumericUpDown`… — with properties, sample values, containers, a smallest real example and how bindings connect to the program |
 | `avs_hmi_check` | Every HMI binding of a project points at something that exists: `Input` → a connection of the named macro, `Output` → an `extern public` global used by a filter input, `Event` → a handler macro; unique control names. `avs_validate` does **not** check this (a broken binding still exports) |
 | `avs_validate` | Load an `.avproj` with `AuroraVisionAvexeGenerator.exe` (no GUI) and report errors |
-| `avs_run` | Run a project headlessly with the Runtime (`AuroraVisionConsole.exe`); with `task_dir` it clears the results CSV and evaluates afterwards |
+| `avs_run` | Run a project headlessly with the Runtime (`AuroraVisionConsole.exe`); with `task_dir` it clears the results CSV and evaluates afterwards. `params` sets the program's `extern public` globals for one run (`{"ImageFolder": ..., "OutputFolder": ...}`) on a temporary copy, so other images or a separate output folder need no edit of the project. Refuses a Studio/Runtime version mismatch, waits and retries while the license's 3-process limit is reached, and explains user-filter DLL version errors and locked / missing output files |
 | `avs_open` | Open a project in Studio so you can press Run |
 | `avs_task_types` | List step types for task specs |
 | `avs_task_new` | Create a task folder skeleton |
 | `avs_task_check` | Report missing / TODO information in a task spec |
 | `avs_annotate` | Local web page to mark each image OK / NG and draw defects or measurements on it (see below) |
-| `avs_evaluate` | Compare the program's `results.csv` with `expected.csv`; margin report; tune vs holdout |
+| `avs_evaluate` | Compare the program's `results.csv` with `expected.csv`; margin report; tune vs holdout. Each numeric value counts as within tolerance, **WRONG** (outside it but reported as found — a silent failure) or **not found** (results column `found` = False). Tolerance per step: `tolerance = 0.5` or `{ split_x = 17 }`. `compare` = list of results CSVs (one per program version) prints a per-image error table of all versions |
 | `avs_split` | Mark part of the images as holdout (kept out of tuning) |
 
 Prompt: **`describe_task`** — the assistant interviews you and writes the task spec.
@@ -147,6 +147,16 @@ Only what must be machine-checked is structured (coordinates, tolerances, ground
 1. `describe_task` → task folder filled in, images marked with `avs_annotate`, `avs_task_check` clean.
 2. The assistant writes the `.avcode` program; it appends one row per image to `results.csv`; `avs_validate` passes.
 3. `avs_run` with `task_dir` → runs the program over the images and evaluates: error vs tolerance, escapes / false rejects.
+
+**Numbers from drawings.** When the user marks positions or sizes in `avs_annotate`, `task.toml` can turn the shapes into expected numeric columns, saved into `expected.csv` on every Save and shown on the page:
+
+```toml
+[expected]
+file = "expected.csv"
+from_annotations = { split_x = "rect.left", split_y = "rect.center_y", hole_d = "circle[hole].diameter" }
+```
+
+`<kind>[<class>].<property>`: point x/y; line x1/y1/x2/y2/length/angle/center_x/center_y; rect and polygon left/right/top/bottom/width/height/center_x/center_y; circle center_x/center_y/radius/diameter. Each image needs exactly one matching shape (give classes when there are several).
 4. The assistant fixes the program and repeats until it passes. (No Runtime? Press Run in Studio via `avs_open`, then `avs_evaluate`.)
 
 ### What the evaluation is compared against

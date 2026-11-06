@@ -28,6 +28,11 @@ def call(tool, **args):
     return r["content"][0]["text"], r["isError"]
 
 
+def same_version_runtime(folder):
+    """A fake Runtime folder whose name carries the version of the detected Studio (run_project refuses a mismatch)."""
+    return os.path.join(folder, f"Aurora Vision Studio {avs_mcp.version_of(avs_mcp.AVS_DIR)} Runtime")
+
+
 def write(path, text):
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
@@ -180,14 +185,14 @@ column = "result"
         write(os.path.join(self.dir, "results.csv"), "image,d,result\na,10.1,OK\nb,19.8,NG\nc,30.4,OK\n")
         text, _ = call("avs_evaluate", task_dir=self.dir)
         self.assertTrue(text.startswith("PASS"), text)
-        self.assertIn("3/3 within", text)
+        self.assertIn("within 3/3", text)
 
     def test_fail(self):
         write(os.path.join(self.dir, "results.csv"), "image,d,result\na.png,10.9,OK\nb.png,20.0,OK\n")
         text, _ = call("avs_evaluate", task_dir=self.dir)
         self.assertTrue(text.startswith("FAIL"), text)
         self.assertIn("No result for 1", text)
-        self.assertIn("OUT a.png", text)
+        self.assertIn("WRONG a.png", text)
         self.assertIn("escapes (NG passed): 1/1", text)
 
     def test_missing_file(self):
@@ -210,7 +215,7 @@ column = "result"
         write(os.path.join(self.dir, "results.csv"), "image,d,result\na,10.1,OK\nb,5,NG\nc,30.4,OK\n")
         text, err = call("avs_evaluate", task_dir=self.dir)
         self.assertTrue(text.startswith("PASS") and not err, text)
-        self.assertIn("[d] numeric, 2 value(s)", text)                              # tolerance applied, b skipped
+        self.assertIn("[d] numeric, 2 image(s)", text)                              # tolerance applied, b skipped
         self.assertIn("[result] categorical: 2/2 correct", text)                    # c skipped
         self.assertIn("escapes (NG passed): 0/1", text)                             # OK/NG report kept
 
@@ -247,7 +252,7 @@ column = "result"
         write(os.path.join(self.dir, "task.toml"), f'[task]\nname = "e"\n[output]\nresults_csv = {json.dumps(victim)}\n')
         proj = os.path.join(self.dir, "p.avproj")
         write(proj, "<AuroraVisionProject />")
-        with unittest.mock.patch.object(avs_mcp, "RUNTIME_DIR", self.dir), \
+        with unittest.mock.patch.object(avs_mcp, "RUNTIME_DIR", same_version_runtime(self.dir)), \
                 unittest.mock.patch("os.path.exists", lambda p, real=os.path.exists: True if p.endswith(
                     "AuroraVisionConsole.exe") else real(p)):
             text, err = call("avs_run", project=proj, task_dir=self.dir)
@@ -256,7 +261,7 @@ column = "result"
         self.assertTrue(os.path.exists(victim))                                      # not deleted
         shutil.rmtree(os.path.dirname(victim))
         write(os.path.join(self.dir, "task.toml"), '[task]\nname = "e"\n[output]\nresults_csv = "expected.csv"\n')
-        with unittest.mock.patch.object(avs_mcp, "RUNTIME_DIR", self.dir), \
+        with unittest.mock.patch.object(avs_mcp, "RUNTIME_DIR", same_version_runtime(self.dir)), \
                 unittest.mock.patch("os.path.exists", lambda p, real=os.path.exists: True if p.endswith(
                     "AuroraVisionConsole.exe") else real(p)):
             text, err = call("avs_run", project=proj, task_dir=self.dir)
@@ -280,7 +285,7 @@ column = "result"
                                     else real_exists(p)):
             text, err = call("avs_run", project=proj, task_dir=self.dir)
         self.assertIn("FAIL", text)
-        self.assertIn("OUT a", text)
+        self.assertIn("WRONG a", text)
         self.assertTrue(err, text)                                                   # a failing run is an error
 
     def test_rows_longer_than_the_header(self):
@@ -897,7 +902,6 @@ class Catalog(unittest.TestCase):
             self.assertIn("DL_DetectAnomalies2", first, q)
         self.assertNotIn("DL_DetectAnomalies2 ", self.c.search("anomaly 1"))
 
-
     def test_not_built(self):
         with unittest.mock.patch.object(self.c, "OUT", os.path.join(self.tmp, "none.json")):
             self.assertIsNone(self.c.search("circle"))
@@ -1094,6 +1098,224 @@ class Run(unittest.TestCase):
             self.assertIn("Directory not found", text)
         finally:
             shutil.rmtree(d)
+
+
+class AnnotationValues(unittest.TestCase):
+    """[expected] from_annotations: numbers from the drawn shapes."""
+
+    def setUp(self):
+        import task_spec
+        self.ts = task_spec
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        os.makedirs(os.path.join(self.dir, "images"))
+        for n in ("a.png", "b.png", "c.png"):
+            write(os.path.join(self.dir, "images", n), "")
+        write(os.path.join(self.dir, "task.toml"),
+              '[task]\nname = "s"\nimages = "images/"\n[output]\nresults_csv = "results.csv"\nkey = "image"\n'
+              '[expected]\nfile = "expected.csv"\n'
+              'from_annotations = { split_x = "rect.left", split_y = "rect.center_y", d = "circle[hole].diameter" }\n'
+              '[[steps]]\nid = "s"\ntype = "locate"\nmethod = "rule"\ntarget = "split"\naccuracy = "17 px"\n'
+              'columns = ["split_x", "split_y"]\ntolerance = { split_x = 17 }\n')
+
+    def test_shape_values(self):
+        v = self.ts.shape_value
+        self.assertEqual(v({"kind": "rect", "points": [[30, 10], [10, 50]]}, "left"), 10)
+        self.assertEqual(v({"kind": "rect", "points": [[30, 10], [10, 50]]}, "center_y"), 30)
+        self.assertEqual(v({"kind": "point", "points": [[3, 4]]}, "y"), 4)
+        self.assertEqual(v({"kind": "line", "points": [[0, 0], [3, 4]]}, "length"), 5)
+        self.assertEqual(v({"kind": "circle", "points": [[0, 0], [3, 4]]}, "diameter"), 10)
+        self.assertEqual(self.ts.parse_shape_ref(" rect [ split ] . left "), ("rect", "split", "left"))
+        for bad in ("rect.radius", "blob.x", "rect", "rect[x]"):
+            with self.assertRaises(ValueError):
+                self.ts.parse_shape_ref(bad)
+
+    def test_derive_needs_exactly_one_shape(self):
+        spec = self.ts.load_task(self.dir)
+        shapes = {"a.png": [{"kind": "rect", "points": [[100, 10], [200, 30]]},
+                            {"kind": "circle", "class": "hole", "points": [[5, 5], [5, 9]]},
+                            {"kind": "circle", "class": "dust", "points": [[1, 1], [1, 2]]}],
+                  "b.png": [{"kind": "rect", "points": [[1, 1], [2, 2]]}, {"kind": "rect", "points": [[3, 3], [4, 4]]}]}
+        vals, notes = self.ts.derive_expected(spec, shapes)
+        self.assertEqual(vals["a.png"], {"split_x": 100, "split_y": 20, "d": 8})      # class filter picks the hole
+        self.assertNotIn("b.png", vals)                                              # two rects: ambiguous
+        self.assertTrue(any("b.png: 2 rect shapes" in n for n in notes))
+
+    def test_save_writes_the_values_and_clears_removed_ones(self):
+        import annotate
+        body = {"images": {"a.png": [{"kind": "rect", "points": [[100.5, 10], [200, 30]]}],
+                           "b.png": [{"kind": "rect", "points": [[50, 0], [60, 10]]}]}, "image_info": {}}
+        msg = annotate.save(self.dir, body)
+        self.assertIn("Expected split_x, split_y, d from the shapes on 2 image(s)", msg)
+        rows = {r["image"]: r for r in read_csv(os.path.join(self.dir, "expected.csv"))}
+        self.assertEqual((rows["a.png"]["split_x"], rows["b.png"]["split_y"]), ("100.5", "5.0"))
+        self.assertNotIn("c.png", rows)
+        del body["images"]["b.png"]
+        annotate.save(self.dir, body)
+        rows = {r["image"]: r for r in read_csv(os.path.join(self.dir, "expected.csv"))}
+        self.assertNotIn("b.png", rows)                                              # no shape, no ground truth left
+        self.assertIn("split_x", annotate.task_state(self.dir)["from_annotations"])
+
+    def test_check_reports_a_bad_reference(self):
+        p = os.path.join(self.dir, "task.toml")
+        with open(p, encoding="utf-8") as f:
+            text = f.read()
+        write(p, text.replace('"rect.left"', '"rect.radius"'))
+        text, err = self.ts.check_task(self.dir)
+        self.assertTrue(err)
+        self.assertIn("expected.from_annotations", text)
+
+    def test_tolerance_number_or_table(self):
+        spec = {"steps": [{"columns": ["x", "y"], "tolerance": 0.5}, {"column": "d", "tolerance": {"d": 2, "e": True}}]}
+        self.assertEqual(self.ts.tolerances(spec), {"x": 0.5, "y": 0.5, "d": 2.0})
+
+
+def read_csv(path):
+    import csv
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
+
+
+class EvaluateFound(unittest.TestCase):
+    """found column, silent failures, expected values from shapes, several versions."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        write(os.path.join(self.dir, "task.toml"),
+              '[task]\nname = "f"\n[output]\nresults_csv = "results.csv"\nkey = "image"\n'
+              '[expected]\nfile = "expected.csv"\nfrom_annotations = { x = "point.x" }\n'
+              '[[steps]]\nid = "s"\ntype = "locate"\nmethod = "rule"\ntarget = "t"\naccuracy = "10 px"\n'
+              'columns = ["x"]\ntolerance = 10\n')
+        write(os.path.join(self.dir, "expected.csv"),
+              "image,x,split\na.png,100,tune\nb.png,200,tune\nc.png,300,holdout\nd.png,,tune\n")
+        write(os.path.join(self.dir, "annotations.json"),               # d.png has no expected x: the point gives it
+              json.dumps({"images": {"d.png": [{"kind": "point", "points": [[400, 9]]}],
+                                     "a.png": [{"kind": "point", "points": [[999, 9]]}]}}))   # a.png keeps 100
+
+    def run_eval(self, rows):
+        write(os.path.join(self.dir, "results.csv"), "image,x,found\n" + rows)
+        return call("avs_evaluate", task_dir=self.dir)
+
+    def test_wrong_and_not_found_are_told_apart(self):
+        text, err = self.run_eval("a.png,105,True\nb.png,260,True\nc,,False\nd.png,401,True\n")
+        self.assertTrue(err)
+        self.assertIn("1 expected value(s) taken from the drawn shapes", text)
+        self.assertIn("within 2/3 | WRONG but reported as found 1 | not found 0", text)   # tune: a, d ok; b wrong
+        self.assertIn("WRONG b.png: error +60.0000", text)
+        self.assertIn("within 0/1 | WRONG but reported as found 0 | not found 1", text)   # holdout c: not found
+        self.assertNotIn("non-numeric", text)
+
+    def test_all_within_passes(self):
+        text, err = self.run_eval("a.png,101,True\nb.png,199,True\nc.png,305,True\nd.png,398,True\n")
+        self.assertFalse(err, text)
+
+    def test_compare_versions(self):
+        for name, rows in (("v1", "a.png,150,True\nb.png,200,True\nc.png,,False\nd.png,400,True\n"),
+                           ("v2", "a.png,101,True\nb.png,202,True\nc.png,301,True\n")):
+            os.makedirs(os.path.join(self.dir, name, "output"))
+            write(os.path.join(self.dir, name, "output", "results.csv"), "image,x,found\n" + rows)
+        text, err = call("avs_evaluate", task_dir=self.dir,
+                         compare=["v1/output/results.csv", "v2/output/results.csv"])
+        self.assertFalse(err, text)
+        self.assertRegex(text, r"a\.png\s+tune\s+\+50\.0!\s+\+1\.0")                # labels default to the project
+        self.assertRegex(text, r"c\.png\s+hold\s+MISS\s+\+1\.0")
+        self.assertRegex(text, r"d\.png\s+tune\s+\+0\.0\s+-")                         # v2 has no row for d
+        self.assertIn("tune: v1: within 2/3, WRONG 1, not found 0", text)
+        self.assertIn("v2: within 2/3, WRONG 0, not found 1", text)
+        self.assertIn("HOLDOUT: v1: within 0/1, WRONG 0, not found 1", text)
+
+
+class RunParams(unittest.TestCase):
+    """avs_run: matching Studio/Runtime versions, globals per run, license retries, hints."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    def test_pick_installs_pairs_versions(self):
+        root = os.path.join(self.dir, "AV")
+        for n in ("Aurora Vision Studio 5.6 Professional", "Aurora Vision Studio 5.6 Runtime",
+                  "Aurora Vision Studio 5.7 Professional", "Aurora Vision Studio 5.7"):
+            os.makedirs(os.path.join(root, n))
+        with unittest.mock.patch.object(avs_mcp, "AV_ROOT", root):
+            s, r = avs_mcp.pick_installs({})                                         # only 5.6 has a Runtime
+            self.assertEqual((os.path.basename(s), os.path.basename(r)),
+                             ("Aurora Vision Studio 5.6 Professional", "Aurora Vision Studio 5.6 Runtime"))
+            s, r = avs_mcp.pick_installs({"AVS_VERSION": "5.7"})
+            self.assertEqual((os.path.basename(s), r), ("Aurora Vision Studio 5.7 Professional", ""))
+            os.makedirs(os.path.join(root, "Aurora Vision Studio 5.7 Runtime"))
+            s, r = avs_mcp.pick_installs({})                                         # newest common version
+            self.assertEqual(avs_mcp.version_of(s) + avs_mcp.version_of(r), "5.75.7")
+
+    def test_mismatched_versions_are_refused(self):
+        proj = os.path.join(self.dir, "p.avproj")
+        write(proj, "<AuroraVisionProject />")
+        with unittest.mock.patch.object(avs_mcp, "AVS_DIR", r"C:\x\Aurora Vision Studio 5.7 Professional"), \
+                unittest.mock.patch.object(avs_mcp, "RUNTIME_DIR", r"C:\x\Aurora Vision Studio 5.6 Runtime"), \
+                unittest.mock.patch("os.path.exists", lambda p, real=os.path.exists: True if p.endswith(
+                    "AuroraVisionConsole.exe") else real(p)):
+            text, err = call("avs_run", project=proj)
+        self.assertTrue(err)
+        self.assertIn("Studio 5.7 builds the program but Runtime 5.6 would run it", text)
+
+    def make_project(self):
+        os.makedirs(os.path.join(self.dir, "proj", "sub"))
+        proj = os.path.join(self.dir, "proj", "p.avproj")
+        write(proj, '<AuroraVisionProject><Files><Program Path="sub\\Program.avcode" />'
+                    '<View Path="p.avview" /></Files></AuroraVisionProject>')
+        code = ('extern public Directory ImageFolder = "C:\\\\old"\nextern public Real Gain = 1.5\n'
+                'extern public Bool Debug = False\npublic Main()\n{\n}\n')
+        write(os.path.join(self.dir, "proj", "sub", "Program.avcode"), code)
+        write(os.path.join(self.dir, "proj", "p.avview"), "<View />")
+        return proj, code
+
+    def test_globals_are_set_on_a_copy(self):
+        proj, code = self.make_project()
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            if cmd[0].endswith("AuroraVisionAvexeGenerator.exe"):
+                src = os.path.join(os.path.dirname(cmd[-2]), "sub", "Program.avcode")
+                with open(src, encoding="utf-8") as f:
+                    seen["code"] = f.read()
+                seen["view"] = os.path.exists(os.path.join(os.path.dirname(cmd[-2]), "p.avview"))
+                write(cmd[-1], "exe")
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            return subprocess.CompletedProcess(cmd, 0, "Program successfully finished.", "")
+        with unittest.mock.patch.object(avs_mcp.subprocess, "run", fake_run), \
+                unittest.mock.patch.object(avs_mcp, "RUNTIME_DIR", same_version_runtime(self.dir)), \
+                unittest.mock.patch("os.path.exists", lambda p, real=os.path.exists: True if p.endswith(
+                    "AuroraVisionConsole.exe") else real(p)):
+            text, err = call("avs_run", project=proj,
+                             params={"ImageFolder": "D:\\new imgs", "Gain": 2, "Debug": True})
+            self.assertFalse(err, text)
+            self.assertIn('extern public Directory ImageFolder = "D:\\\\new imgs"', seen["code"])
+            self.assertIn("extern public Real Gain = 2", seen["code"])
+            self.assertIn("extern public Bool Debug = True", seen["code"])
+            self.assertTrue(seen["view"])
+            self.assertIn("Globals for this run: ImageFolder = D:\\new imgs", text)
+            with open(os.path.join(self.dir, "proj", "sub", "Program.avcode"), encoding="utf-8") as f:
+                self.assertEqual(f.read(), code)                                     # original untouched
+            text, err = call("avs_run", project=proj, params={"Folder": "x"})
+        self.assertTrue(err)
+        self.assertIn("Available: ImageFolder (Directory), Gain (Real), Debug (Bool)", text)
+
+    def test_license_limit_is_retried_and_hints(self):
+        calls = []
+
+        def busy_then_ok(cmd, **kw):
+            calls.append(cmd)
+            out = "License process limit is exceeded." if len(calls) < 3 else "done"
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+        with unittest.mock.patch.object(avs_mcp.subprocess, "run", busy_then_ok), \
+                unittest.mock.patch.object(avs_mcp.time, "sleep", lambda s: None):
+            r = avs_mcp.run_aurora(["x.exe"])
+        self.assertEqual((len(calls), r.stdout), (3, "done"))
+        h = avs_mcp.hints("The library was compiled for use in Aurora Vision Studio 5.7.4, cannot load it in 5.7.3 "
+                          "version.\n[IO Error] Cannot open file: 'C:\\o\\r.csv'. Error code: 13 [Permission denied].")
+        self.assertIn("rebuild the DLL with the Studio 5.7.3 SDK", h)
+        self.assertIn("C:\\o\\r.csv is locked", h)
 
 
 if __name__ == "__main__":

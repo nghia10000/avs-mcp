@@ -5,7 +5,9 @@ Section and step-type definitions are data in spec/common.toml and spec/types/*.
 
 import csv
 import json
+import math
 import os
+import re
 import tomllib
 
 SPEC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spec")
@@ -44,6 +46,8 @@ def toml_value(v):
         return repr(v)
     if isinstance(v, list):
         return "[" + ", ".join(toml_value(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{ " + ", ".join(f"{k} = {toml_value(x)}" for k, x in v.items()) + " }"
     return json.dumps(str(v), ensure_ascii=False)
 
 
@@ -134,6 +138,84 @@ def step_columns(step):
     if isinstance(step.get("columns"), list):
         cols += [c for c in step["columns"] if isinstance(c, str)]
     return cols
+
+
+def tolerances(spec):
+    """Column -> allowed deviation from every step: `tolerance = 0.05` (all the step's columns) or
+    `tolerance = { split_x = 17 }` (per column)."""
+    tol = {}
+    for st in spec.get("steps", []):
+        t = st.get("tolerance")
+        if isinstance(t, (int, float)) and not isinstance(t, bool):
+            for c in step_columns(st):
+                tol[c] = float(t)
+        elif isinstance(t, dict):
+            tol.update({c: float(v) for c, v in t.items() if isinstance(v, (int, float)) and not isinstance(v, bool)})
+    return tol
+
+
+# ------------------------------------------------------------------ expected values from drawn shapes
+
+# expected.from_annotations = { split_x = "rect.left", hole_d = "circle[hole].diameter" }:
+# <kind>[<class>].<property>; the image must have exactly one shape of that kind (and class).
+SHAPE_PROPS = {
+    "point": ("x", "y"),
+    "line": ("x1", "y1", "x2", "y2", "length", "angle", "center_x", "center_y"),
+    "rect": ("left", "right", "top", "bottom", "width", "height", "center_x", "center_y"),
+    "circle": ("center_x", "center_y", "radius", "diameter"),
+    "polygon": ("left", "right", "top", "bottom", "width", "height", "center_x", "center_y"),
+}
+
+
+def parse_shape_ref(ref):
+    """'rect[split].left' -> ('rect', 'split', 'left'); ValueError with the allowed forms when malformed."""
+    m = re.fullmatch(r"\s*(\w+)\s*(?:\[\s*([^\]]*?)\s*\])?\s*\.\s*(\w+)\s*", str(ref))
+    if not m or m.group(1) not in SHAPE_PROPS or m.group(3) not in SHAPE_PROPS[m.group(1)]:
+        forms = "; ".join(f"{k}.{{{','.join(v)}}}" for k, v in SHAPE_PROPS.items())
+        raise ValueError(f"'{ref}' is not <kind>[<class>].<property> with one of: {forms}")
+    return m.group(1), m.group(2) or None, m.group(3)
+
+
+def shape_value(shape, prop):
+    pts = shape.get("points") or []
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    if shape["kind"] == "point":
+        return {"x": xs[0], "y": ys[0]}[prop]
+    if shape["kind"] == "line":
+        (x1, y1), (x2, y2) = pts[0], pts[-1]
+        return {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "length": math.hypot(x2 - x1, y2 - y1),
+                "angle": math.degrees(math.atan2(y2 - y1, x2 - x1)),
+                "center_x": (x1 + x2) / 2, "center_y": (y1 + y2) / 2}[prop]
+    if shape["kind"] == "circle":
+        r = math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1])
+        return {"center_x": pts[0][0], "center_y": pts[0][1], "radius": r, "diameter": 2 * r}[prop]
+    left, right, top, bottom = min(xs), max(xs), min(ys), max(ys)      # rect (two corners) or polygon: bounding box
+    return {"left": left, "right": right, "top": top, "bottom": bottom, "width": right - left,
+            "height": bottom - top, "center_x": (left + right) / 2, "center_y": (top + bottom) / 2}[prop]
+
+
+def from_annotations(spec):
+    """column -> parsed shape reference from [expected] from_annotations (raises ValueError on a bad entry)."""
+    table = spec.get("expected", {}).get("from_annotations") or {}
+    if not isinstance(table, dict):
+        raise ValueError('expected.from_annotations must be a table: { column = "rect.left", ... }')
+    return {c: parse_shape_ref(r) for c, r in table.items() if not is_todo(r)}
+
+
+def derive_expected(spec, shapes_by_image):
+    """({image: {column: value}}, [notes]) from the drawn shapes. An image without exactly one matching shape gets
+    no value for that column (and a note when it has several)."""
+    refs = from_annotations(spec)
+    values, notes = {}, []
+    for img, shapes in sorted(shapes_by_image.items()):
+        for col, (kind, cls, prop) in refs.items():
+            hits = [s for s in shapes if s.get("kind") == kind and (cls is None or (s.get("class") or "") == cls)]
+            if len(hits) == 1:
+                values.setdefault(img, {})[col] = round(shape_value(hits[0], prop), 3)
+            elif len(hits) > 1:
+                notes.append(f"{img}: {len(hits)} {kind}{f'[{cls}]' if cls else ''} shapes, {col} left blank "
+                             "(draw one, or give each a class)")
+    return values, notes
 
 
 def read_csv(path):
@@ -244,6 +326,15 @@ def check_task(task_dir):
     rendered = os.path.join(task_dir, "annotated")
     if os.path.isdir(rendered) and os.listdir(rendered):
         warnings.append(f"look at {rendered}\\*.png — the images as the user marked them, with every description")
+
+    try:
+        refs = from_annotations(spec)
+        cols = {c for st in steps for c in step_columns(st)}
+        for c in refs:
+            if cols and c not in cols:
+                warnings.append(f"expected.from_annotations: '{c}' is not a result column of any step")
+    except ValueError as e:
+        errors.append(f"expected.from_annotations: {e}")
 
     # expected.csv
     key = spec.get("output", {}).get("key", "image")

@@ -118,6 +118,7 @@
   <textarea id="note" placeholder="Why OK / NG, what to watch for on this image…"></textarea>
   <h2>Shapes</h2>
   <div id="shapes"></div>
+  <div id="derived" class="hint"></div>
   <div id="editor">
     <label for="cls">Class (defect type)</label>
     <input id="cls" type="text" list="classes" placeholder="e.g. edge_gap, seal_gap, scratch">
@@ -411,6 +412,7 @@ function topLeft(sh) {
 }
 
 function draw() {
+  if (T && cur) renderDerived();                      // values follow a shape while it is moved or resized
   const dpr = window.devicePixelRatio || 1;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, cv.width, cv.height);
@@ -563,7 +565,37 @@ function renderSide() {
   $("#desc").value = sh.label || "";
   $("#ref").value = sh.step ? "step:" + sh.step : sh.feature ? "feature:" + sh.feature : "";
 }
+// [expected] from_annotations in task.toml: the values Save will write to the expected file for this image.
+function shapeValue(sh, prop) {
+  const p = sh.points, xs = p.map(q => q[0]), ys = p.map(q => q[1]);
+  if (sh.kind === "point") return { x: xs[0], y: ys[0] }[prop];
+  if (sh.kind === "line") {
+    const [a, b] = [p[0], p[p.length - 1]];
+    return { x1: a[0], y1: a[1], x2: b[0], y2: b[1], length: Math.hypot(b[0] - a[0], b[1] - a[1]),
+             angle: Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI,
+             center_x: (a[0] + b[0]) / 2, center_y: (a[1] + b[1]) / 2 }[prop];
+  }
+  if (sh.kind === "circle") {
+    const r = Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]);
+    return { center_x: p[0][0], center_y: p[0][1], radius: r, diameter: 2 * r }[prop];
+  }
+  const l = Math.min(...xs), r = Math.max(...xs), t = Math.min(...ys), b = Math.max(...ys);
+  return { left: l, right: r, top: t, bottom: b, width: r - l, height: b - t, center_x: (l + r) / 2, center_y: (t + b) / 2 }[prop];
+}
+function renderDerived() {
+  const refs = Object.entries(T.from_annotations || {});
+  if (!refs.length) { $("#derived").innerHTML = ""; return; }
+  $("#derived").innerHTML = "<b>Expected from shapes</b><br>" + refs.map(([col, ref]) => {
+    const m = /^\s*(\w+)\s*(?:\[\s*([^\]]*?)\s*\])?\s*\.\s*(\w+)\s*$/.exec(ref);
+    if (!m) return `${esc(col)}: ?`;
+    const hits = list().filter(sh => sh.kind === m[1] && (!m[2] || (sh.class || "") === m[2]));
+    const v = hits.length === 1 ? shapeValue(hits[0], m[3]) : undefined;
+    return `${esc(col)} = ${v === undefined ? (hits.length ? `– (${hits.length} ${esc(m[1])} shapes)` : "–") : v.toFixed(1)}` +
+           ` <span style="opacity:.6">(${esc(ref)})</span>`;
+  }).join("<br>");
+}
 function renderShapeList() {
+  renderDerived();
   $("#shapes").innerHTML = list().map((sh, i) =>
     `<div data-i="${i}" class="${i === sel ? "sel" : ""}"><span class="sw" style="background:${color(sh.class)}"></span>` +
     `<b>#${i + 1}</b> ${sh.kind} <span>${esc(sh.class || "")}</span><span class="d">${esc(sh.label || "")}</span></div>`
